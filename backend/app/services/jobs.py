@@ -272,15 +272,11 @@ class ScanJobManager:
         device_info = document.get("device") if isinstance(document.get("device"), dict) else {}
         hostname = str(device_info.get("hostname") or "").strip()
         if not hostname or hostname.lower() in {"unknown-host", "unknown host"}:
-            logger.warning(
-                "scan %s has no usable hostname in scanner output; leaving it unlinked", scan.id
-            )
+            logger.warning("scan %s has no usable hostname in scanner output; leaving it unlinked", scan.id)
             return None
 
         device = (
-            db.query(Device)
-            .filter(Device.user_id == scan.user_id, Device.hostname == hostname)
-            .one_or_none()
+            db.query(Device).filter(Device.user_id == scan.user_id, Device.hostname == hostname).one_or_none()
         )
         os_type = str(device_info.get("os") or "windows")[:32]
         os_version = str(device_info.get("version") or "")[:64] or None
@@ -319,9 +315,7 @@ class ScanJobManager:
                 device.os_build = os_build
 
         scan.device_id = device.id
-        logger.info(
-            "linked scan %s to device %s (hostname=%s)", scan.id, device.id, device.hostname
-        )
+        logger.info("linked scan %s to device %s (hostname=%s)", scan.id, device.id, device.hostname)
         return device
 
     def _finish(self, scan_id: uuid.UUID, document: dict[str, Any], result_file: Path) -> None:

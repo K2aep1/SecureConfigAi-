@@ -60,6 +60,7 @@ def test_status_explains_a_missing_key_when_ai_is_enabled(client, user, monkeypa
     monkeypatch.setattr(ai_module.settings, "AI_ENABLED", True)
     monkeypatch.setattr(ai_module.settings, "OPENAI_API_KEY", None)
     monkeypatch.setattr(ai_module.settings, "DEEPSEEK_API_KEY", None)
+    monkeypatch.setattr(ai_module.settings, "GEMINI_API_KEY", None)
 
     body = client.get("/api/v1/ai/status", headers=user["headers"]).json()
     assert body["configured"] is False
@@ -259,14 +260,18 @@ def test_chat_cannot_attach_another_users_scan(client, user):
     assert response.status_code == 404
 
 
-def test_ai_recommendation_does_not_overwrite_recorded_remediation(client, user, configured_provider, monkeypatch):
+def test_ai_recommendation_does_not_overwrite_recorded_remediation(
+    client, user, configured_provider, monkeypatch
+):
     scan = _upload(client, user["headers"], failing_document("AI-REC-PRESERVE"))
     finding_id = _finding_id(client, user["headers"], scan["scan_id"])
     before = client.get(f"/api/v1/scans/{scan['scan_id']}/results", headers=user["headers"]).json()
     finding_before = next(item for item in before["findings"] if item["id"] == finding_id)
     original_guidance = finding_before["recommendation"]["what_should_be_done"]
 
-    monkeypatch.setattr(ai_module.ai_client, "_call", lambda messages, max_tokens=700: "Fresh advisory wording.")
+    monkeypatch.setattr(
+        ai_module.ai_client, "_call", lambda messages, max_tokens=700: "Fresh advisory wording."
+    )
     response = client.post(f"/api/v1/ai/findings/{finding_id}/recommend", headers=user["headers"])
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["what_should_be_done"] == "Fresh advisory wording."

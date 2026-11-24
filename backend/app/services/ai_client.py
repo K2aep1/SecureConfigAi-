@@ -140,25 +140,55 @@ def _fallback_response(fallback: str, reason: str | None = None) -> str:
             detail = "AI assistance is disabled in application settings."
         else:
             detail = "No usable provider key is configured; check the AI settings."
-    elif any(marker in lowered for marker in ("insufficient_quota", "credit_balance_exhausted", "no credits remaining", "quota exceeded")):
+    elif any(
+        marker in lowered
+        for marker in (
+            "insufficient_quota",
+            "credit_balance_exhausted",
+            "no credits remaining",
+            "quota exceeded",
+        )
+    ):
         detail = (
             f"The {provider} API rejected text generation because no API credits or quota are available. "
-            "Check the provider billing balance and usage limits. API reachability alone does not prove that generation is available."
+            "Check the provider billing balance and usage limits. "
+            "API reachability alone does not prove that generation is available."
         )
     elif "model_not_found" in lowered or "model not found" in lowered:
-        detail = "The provider could not access the configured model. Verify the model name and project permissions."
+        detail = (
+            "The provider could not access the configured model. "
+            "Verify the model name and project permissions."
+        )
     elif "429" in lowered or "ratelimit" in lowered or "rate limit" in lowered:
-        detail = "The provider rate-limited the generation request. Check usage limits and retry after the provider's cooldown."
+        detail = (
+            "The provider rate-limited the generation request. "
+            "Check usage limits and retry after the provider's cooldown."
+        )
     elif "401" in lowered or "authentication" in lowered or "invalid_api_key" in lowered:
-        detail = "The provider rejected authentication for text generation. Verify the configured provider key."
+        detail = (
+            "The provider rejected authentication for text generation. "
+            "Verify the configured provider key."
+        )
     elif "403" in lowered or "permission" in lowered:
-        detail = "The provider denied permission for this generation request. Check project/model permissions."
+        detail = (
+            "The provider denied permission for this generation request. "
+            "Check project/model permissions."
+        )
     elif "timeout" in lowered or "connection" in lowered:
-        detail = "The provider request could not complete because of a connection or timeout problem."
+        detail = (
+            "The provider request could not complete because of a connection "
+            "or timeout problem."
+        )
     else:
-        detail = "The provider request failed. Check the backend log for the diagnostic error; no score or verdict was changed."
+        detail = (
+            "The provider request failed. Check the backend log for the diagnostic error; "
+            "no score or verdict was changed."
+        )
 
-    return f"{fallback.rstrip()}\n\n[LOCAL FALLBACK — NOT AI-GENERATED] {note} {detail}"
+    return (
+        f"{fallback.rstrip()}\n\n[LOCAL FALLBACK — NOT AI-GENERATED] "
+        f"{note} {detail}"
+    )
 
 
 def digest(payload: Any) -> str:
@@ -269,7 +299,11 @@ class AIClient:
                     # the deterministic fallback and produces avoidable provider calls.
                     exhausted_quota = any(
                         marker in error_text
-                        for marker in ("insufficient_quota", "credit_balance_exhausted", "no credits remaining")
+                        for marker in (
+                            "insufficient_quota",
+                            "credit_balance_exhausted",
+                            "no credits remaining",
+                        )
                     )
                     is_retryable = not exhausted_quota and (
                         bool(retryable and isinstance(exc, retryable))
