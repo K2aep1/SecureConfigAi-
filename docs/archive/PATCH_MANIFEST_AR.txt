@@ -1,0 +1,23 @@
+ملفات حزمة الترقية الانتقائية (relative to project root):
+PATCH_MANIFEST_AR.txt
+README.md
+UPGRADE_V3_TO_V4_AR.md
+backend/.env.example
+backend/app/api/v1/admin.py
+backend/app/api/v1/auth.py
+backend/app/api/v1/scans.py
+backend/app/core/audit.py
+backend/app/core/config.py
+backend/app/core/database.py
+backend/app/core/middleware.py
+backend/app/services/ai_client.py
+backend/app/services/baseline.py
+backend/app/services/report_generator.py
+backend/app/services/token_service.py
+backend/requirements.lock
+backend/tests/test_gemini_provider_config.py
+docs/V4_RELEASE_NOTES.txt
+pyproject.toml
+scanner/cli.py
+scripts/build_release.py
+scripts/rotate_secrets.py

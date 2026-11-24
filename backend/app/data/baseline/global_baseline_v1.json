@@ -1,0 +1,1598 @@
+{
+  "baseline_id": "secureconfigai-windows-endpoint",
+  "version": "1.0.0",
+  "schema_version": "1.0",
+  "title": "SecureConfigAI Windows Endpoint Security Baseline",
+  "description": "A 28-control endpoint hardening baseline for Windows 10/11 workstations and member servers, mapped to the CIS Critical Security Controls v8.1, the CIS Microsoft Windows 11 Enterprise Benchmark, the Microsoft Security Baseline for Windows 11 and NIST SP 800-53 Rev. 5. Control weights express relative security impact and are used as the denominator weighting for the posture and coverage metrics.",
+  "published_at": "2026-10-06T00:00:00+00:00",
+  "reference_policy": "References name the benchmark and the exact Windows setting, plus organisational controls from CIS Controls v8.1 and NIST SP 800-53 Rev. 5. Benchmark recommendation numbering is intentionally omitted because it changes between benchmark revisions; the setting name is the stable identifier. Adjust the standard titles to the exact benchmark revision your organisation has adopted.",
+  "references": [
+    {
+      "id": "cis-controls-v8.1",
+      "title": "CIS Critical Security Controls v8.1",
+      "url": "https://www.cisecurity.org/controls"
+    },
+    {
+      "id": "cis-win11-benchmark",
+      "title": "CIS Microsoft Windows 11 Enterprise Benchmark",
+      "url": "https://www.cisecurity.org/cis-benchmarks"
+    },
+    {
+      "id": "ms-security-baseline",
+      "title": "Microsoft Security Baseline for Windows 11",
+      "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+    },
+    {
+      "id": "nist-sp-800-53r5",
+      "title": "NIST SP 800-53 Rev. 5",
+      "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+    },
+    {
+      "id": "nist-sp-800-40r4",
+      "title": "NIST SP 800-40 Rev. 4 (Patch Management)",
+      "url": "https://csrc.nist.gov/pubs/sp/800/40/r4/final"
+    },
+    {
+      "id": "cisa-countermeasures",
+      "title": "CISA Eviction Strategies — Countermeasures",
+      "url": "https://www.cisa.gov/eviction-strategies-tool/info-countermeasures/CM0087"
+    },
+    {
+      "id": "microsoft-learn",
+      "title": "Microsoft Learn product documentation",
+      "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+    }
+  ],
+  "thresholds": {
+    "risk": {
+      "low_max": 15,
+      "moderate_max": 39,
+      "high_max": 69
+    },
+    "risk_model": {
+      "single_control_likelihood": 0.5,
+      "aggregation": "noisy_or",
+      "formula": "impact_i = severity_impact_i * category_exposure_i * asset_criticality / 125; risk = 100 * (1 - product(1 - L * impact_i)); L = single_control_likelihood"
+    },
+    "evidence_quality": {
+      "high_coverage": 100,
+      "medium_coverage": 75
+    },
+    "posture_bands": {
+      "strong": 90,
+      "adequate": 75,
+      "weak": 50
+    }
+  },
+  "categories": {
+    "Firewall": {
+      "exposure": 4,
+      "description": "Security impact weighting for the Firewall control family"
+    },
+    "Network Security": {
+      "exposure": 5,
+      "description": "Security impact weighting for the Network Security control family"
+    },
+    "Authentication": {
+      "exposure": 4,
+      "description": "Security impact weighting for the Authentication control family"
+    },
+    "Account Security": {
+      "exposure": 4,
+      "description": "Security impact weighting for the Account Security control family"
+    },
+    "Endpoint Protection": {
+      "exposure": 4,
+      "description": "Security impact weighting for the Endpoint Protection control family"
+    },
+    "Updates": {
+      "exposure": 4,
+      "description": "Security impact weighting for the Updates control family"
+    },
+    "System Hardening": {
+      "exposure": 3,
+      "description": "Security impact weighting for the System Hardening control family"
+    },
+    "Registry Hardening": {
+      "exposure": 3,
+      "description": "Security impact weighting for the Registry Hardening control family"
+    },
+    "Access Control": {
+      "exposure": 3,
+      "description": "Security impact weighting for the Access Control control family"
+    },
+    "Device Security": {
+      "exposure": 3,
+      "description": "Security impact weighting for the Device Security control family"
+    },
+    "Services": {
+      "exposure": 3,
+      "description": "Security impact weighting for the Services control family"
+    }
+  },
+  "severity_impact": {
+    "critical": 5,
+    "high": 4,
+    "medium": 3,
+    "low": 2,
+    "informational": 1
+  },
+  "controls": [
+    {
+      "control_id": "FW-001",
+      "title": "Windows Firewall is enabled for every network profile",
+      "category": "Firewall",
+      "weight": 12,
+      "severity": "high",
+      "collector": "firewall",
+      "expected_state": "Every profile (Domain, Private, Public) reports Enabled = True",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "all_bool_true",
+        "paths": [
+          "checks.firewall.profiles[*].enabled"
+        ]
+      },
+      "evidence_paths": [
+        "checks.firewall.profiles"
+      ],
+      "rationale": "Host-based filtering is the last control between an endpoint and lateral movement. A disabled profile removes filtering entirely for that network type, including for inbound traffic the operator believes is blocked.",
+      "remediation": {
+        "what_is_wrong": "One or more Windows Firewall profiles are disabled.",
+        "why_it_matters": "With a profile disabled, inbound connections are no longer filtered for that network type, so exposed services become reachable from the surrounding network.",
+        "what_should_be_done": "Enable all profiles: Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True. Enforce it centrally with the Microsoft Security Baseline setting 'Windows Defender Firewall: Protect all network connections'.",
+        "verify": "Get-NetFirewallProfile | Select-Object Name, Enabled"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Windows Defender Firewall: Domain/Private/Public Profile: Firewall state = On",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Windows Defender Firewall: Domain/Private/Public Profile: Firewall state",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 4 — Secure Configuration of Enterprise Assets and Software",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-7 Boundary Protection",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "CM-6 Configuration Settings",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "FW-002",
+      "title": "Firewall default inbound action is Block",
+      "category": "Firewall",
+      "weight": 10,
+      "severity": "high",
+      "collector": "firewall",
+      "expected_state": "DefaultInboundAction = Block on every profile",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "enum_in",
+        "paths": [
+          "checks.firewall.profiles[*].inbound"
+        ],
+        "values": [
+          "block"
+        ]
+      },
+      "evidence_paths": [
+        "checks.firewall.profiles[*].inbound"
+      ],
+      "rationale": "A permissive default inbound policy means every rule that is not explicitly denying traffic becomes reachable. Default-deny keeps the exposed surface equal to the explicit allow list.",
+      "remediation": {
+        "what_is_wrong": "A firewall profile allows inbound connections by default.",
+        "why_it_matters": "Traffic that matches no explicit rule is accepted, so services added by later software are reachable without any firewall decision.",
+        "what_should_be_done": "Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block, then review the allow rules that are still required.",
+        "verify": "Get-NetFirewallProfile | Select-Object Name, DefaultInboundAction"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Windows Defender Firewall: Domain Profile: Inbound connections = Block",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Windows Defender Firewall: Domain/Private/Public Profile: Inbound connections",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-7 Boundary Protection",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-4 Information Flow Enforcement",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "FW-003",
+      "title": "Firewall logging is enabled for dropped and allowed traffic",
+      "category": "Firewall",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "firewall",
+      "expected_state": "LogBlocked = True and LogAllowed = True on every profile",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "all_bool_true",
+        "paths": [
+          "checks.firewall.logging[*].LogBlocked",
+          "checks.firewall.logging[*].LogAllowed"
+        ]
+      },
+      "evidence_paths": [
+        "checks.firewall.logging"
+      ],
+      "rationale": "Firewall logs are the only local record of what the host rejected. Without them an investigation cannot distinguish 'nothing happened' from 'nothing was recorded'.",
+      "remediation": {
+        "what_is_wrong": "Firewall logging is disabled for at least one profile.",
+        "why_it_matters": "Blocked connection attempts leave no local evidence, which removes the endpoint's contribution to detection and incident reconstruction.",
+        "what_should_be_done": "Set-NetFirewallProfile -Profile Domain,Private,Public -LogBlocked True -LogAllowed True -LogMaxSizeKilobytes 16384, and forward the logs.",
+        "verify": "Get-NetFirewallProfile | Select-Object Name, LogBlocked, LogAllowed, LogMaxSizeKilobytes"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Windows Defender Firewall: Domain Profile: Logging: Log dropped packets = Yes",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Windows Defender Firewall: Domain/Private/Public Profile: Logging",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 8 — Audit Log Management",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AU-2 Event Logging",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AU-12 Audit Record Generation",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "BL-001",
+      "title": "Operating-system volume is encrypted with protection active",
+      "category": "System Hardening",
+      "weight": 14,
+      "severity": "critical",
+      "collector": "system_hardening",
+      "expected_state": "VolumeStatus = FullyEncrypted and ProtectionStatus = On for the OS volume",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.system_hardening.bitlocker.enabled"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.system_hardening.bitlocker"
+      ],
+      "rationale": "Full-volume encryption with protection on is what protects data at rest when a device is lost, stolen or booted from other media. Encryption that is suspended or still encrypting does not provide that protection yet.",
+      "remediation": {
+        "what_is_wrong": "BitLocker is not fully applied and protected on the OS volume.",
+        "why_it_matters": "Anyone with physical access can read the volume offline, so credential material and business data are exposed without ever logging in.",
+        "what_should_be_done": "Enable BitLocker with a TPM protector and escrow the recovery key: Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector, then confirm Protect-BitLocker -MountPoint C:.",
+        "verify": "Get-BitLockerVolume -MountPoint C: | Select-Object VolumeStatus, ProtectionStatus"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "BitLocker Drive Encryption: Operating System Drives",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 3.6 — Encrypt Data on End-User Devices",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Get-BitLockerVolume",
+          "url": "https://learn.microsoft.com/en-us/powershell/module/bitlocker/get-bitlockervolume"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-28 Protection of Information at Rest",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-13 Cryptographic Protection",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "DEF-001",
+      "title": "Microsoft Defender antivirus and real-time protection are enabled",
+      "category": "Endpoint Protection",
+      "weight": 12,
+      "severity": "high",
+      "collector": "system_hardening",
+      "expected_state": "AntivirusEnabled = True and RealTimeProtectionEnabled = True",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "all_bool_true",
+        "paths": [
+          "checks.system_hardening.defender.enabled",
+          "checks.system_hardening.defender.real_time_protection"
+        ]
+      },
+      "evidence_paths": [
+        "checks.system_hardening.defender"
+      ],
+      "rationale": "Real-time protection is the endpoint's execution-time detection. It is read from Get-MpComputerStatus, which reports the effective state — reading the policy registry key instead produces false 'not configured' results on healthy hosts.",
+      "remediation": {
+        "what_is_wrong": "Defender is disabled or running without real-time protection.",
+        "why_it_matters": "Without real-time scanning, known malware executes unchallenged and the host cannot be considered defended by antivirus.",
+        "what_should_be_done": "Re-enable Defender: Set-MpPreference -DisableRealtimeMonitoring $false, and confirm the Microsoft Defender Antivirus policy 'Turn off real-time protection' is set to Disabled. If a third-party antivirus is the primary product, Defender legitimately runs in passive mode — record that decision as a device exemption with a reason.",
+        "verify": "Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled, AMRunningMode"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Microsoft Defender Antivirus: Turn off real-time protection = Disabled",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 10.1 — Deploy and Maintain Anti-Malware Software",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Get-MpComputerStatus",
+          "url": "https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SI-3 Malicious Code Protection",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "DEF-002",
+      "title": "Microsoft Defender tamper protection is enabled",
+      "category": "Endpoint Protection",
+      "weight": 8,
+      "severity": "medium",
+      "collector": "system_hardening",
+      "expected_state": "IsTamperProtected = True",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.system_hardening.defender.tamper_protection"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.system_hardening.defender.tamper_protection"
+      ],
+      "rationale": "Tamper protection stops malware and unprivileged administrators from disabling Defender, its real-time protection or its cloud-delivered protection.",
+      "remediation": {
+        "what_is_wrong": "Defender tamper protection is off.",
+        "why_it_matters": "Malicious code that reaches the endpoint can turn off the protection that would have detected it, and the change is not blocked.",
+        "what_should_be_done": "Enable tamper protection in Microsoft Defender for Endpoint (or with Set-MpPreference -DisableTamperProtection $false where supported) and confirm the setting is not overridden by a third-party security product.",
+        "verify": "Get-MpComputerStatus | Select-Object IsTamperProtected"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Microsoft Defender Antivirus: Tamper protection",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Prevent changes to security settings with tamper protection",
+          "url": "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-defender"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 10 — Malware Defenses",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SI-3 Malicious Code Protection",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "DEF-003",
+      "title": "Microsoft Defender signatures are current",
+      "category": "Endpoint Protection",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "system_hardening",
+      "expected_state": "AntivirusSignatureAge <= 3 days",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_at_most",
+        "paths": [
+          "checks.system_hardening.defender.signature_age"
+        ],
+        "max": 3
+      },
+      "evidence_paths": [
+        "checks.system_hardening.defender.signature_age",
+        "checks.system_hardening.defender.status"
+      ],
+      "rationale": "Signature-based detection only covers what the signature set knows. A stale set is a measurable gap that can be closed without user action.",
+      "remediation": {
+        "what_is_wrong": "Defender signatures are more than three days old.",
+        "why_it_matters": "Recent malware families are not recognised regardless of whether real-time protection is running.",
+        "what_should_be_done": "Update-MpSignature and confirm automatic signature updates are enabled: Set-MpPreference -SignatureUpdateInterval 4 (hours).",
+        "verify": "Get-MpComputerStatus | Select-Object AntivirusSignatureAge, AntivirusSignatureVersion"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Microsoft Defender Antivirus: Signature updates",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 10.2 — Configure Automatic Anti-Malware Signature Updates",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SI-3 Malicious Code Protection",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "SYS-UAC-001",
+      "title": "User Account Control is enabled for all administrators",
+      "category": "System Hardening",
+      "weight": 8,
+      "severity": "high",
+      "collector": "system_hardening",
+      "expected_state": "EnableLUA = 1 (Run all administrators in Admin Approval Mode)",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.system_hardening.uac_enabled"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.system_hardening.uac"
+      ],
+      "rationale": "UAC keeps administrator tokens split so routine work runs unelevated. Disabling it makes every process the administrator starts fully privileged, which removes the main barrier to silent privilege abuse. Note that the built-in Administrator account (RID 500) bypasses UAC by design.",
+      "remediation": {
+        "what_is_wrong": "User Account Control is disabled or not enforcing approval mode.",
+        "why_it_matters": "Every process started by an administrator runs with full privileges, so any compromised application inherits administrative control of the endpoint.",
+        "what_should_be_done": "Set HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\EnableLUA = 1 and reboot, and apply the Microsoft Security Baseline 'User Account Control: Run all administrators in Admin Approval Mode' = Enabled.",
+        "verify": "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' | Select-Object EnableLUA"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "User Account Control: Run all administrators in Admin Approval Mode = Enabled",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "User Account Control: Run all administrators in Admin Approval Mode",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "User Account Control settings and registry keys",
+          "url": "https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/settings-and-configuration"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-6 Least Privilege",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "SYS-UAC-002",
+      "title": "Administrator elevation prompts for consent on the secure desktop",
+      "category": "System Hardening",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "system_hardening",
+      "expected_state": "ConsentPromptBehaviorAdmin = 2",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_is",
+        "paths": [
+          "checks.system_hardening.uac.ConsentPromptBehaviorAdmin"
+        ],
+        "value": 2
+      },
+      "evidence_paths": [
+        "checks.system_hardening.uac"
+      ],
+      "rationale": "Prompting on the secure desktop prevents other processes from drawing over or driving the consent dialog, which is what makes UAC a security boundary rather than a notification.",
+      "remediation": {
+        "what_is_wrong": "Administrator elevation does not require consent on the secure desktop.",
+        "why_it_matters": "A same-session process can spoof or auto-accept the elevation dialog, so a user may approve something other than what they believe they approved.",
+        "what_should_be_done": "Set 'User Account Control: Behavior of the elevation prompt for administrators in Admin Approval Mode' to 'Prompt for consent on the secure desktop' (ConsentPromptBehaviorAdmin = 2).",
+        "verify": "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' | Select-Object ConsentPromptBehaviorAdmin, PromptOnSecureDesktop"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "User Account Control: Behavior of the elevation prompt for administrators in Admin Approval Mode = Prompt for consent on the secure desktop",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "User Account Control: Behavior of the elevation prompt for administrators",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "User Account Control settings and registry keys",
+          "url": "https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/settings-and-configuration"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-6 Least Privilege",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "DEV-SB-001",
+      "title": "Secure Boot is enabled",
+      "category": "Device Security",
+      "weight": 8,
+      "severity": "high",
+      "collector": "system_hardening",
+      "expected_state": "Secure Boot is enabled on UEFI firmware",
+      "applicability": {
+        "type": "when_supported",
+        "paths": [
+          "checks.system_hardening.secure_boot_supported"
+        ]
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.system_hardening.secure_boot"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.system_hardening.secure_boot",
+        "checks.system_hardening.secure_boot_error"
+      ],
+      "rationale": "Secure Boot verifies the boot chain, which is what stops bootkits and unauthenticated kernel drivers from loading before the operating system's own controls start.",
+      "remediation": {
+        "what_is_wrong": "Secure Boot is not enabled.",
+        "why_it_matters": "Unsigned or tampered boot components can load before Windows defences, surviving reinstallation of the operating system.",
+        "what_should_be_done": "Enable Secure Boot in UEFI firmware settings (and disable legacy/CSM booting); confirm with Confirm-SecureBootUEFI after a reboot.",
+        "verify": "Confirm-SecureBootUEFI"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Secure Boot",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure Secure Boot is enabled",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Secure Boot overview",
+          "url": "https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-secure-boot"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SI-7 Software, Firmware, and Information Integrity",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "TPM-001",
+      "title": "TPM is present and ready",
+      "category": "Device Security",
+      "weight": 8,
+      "severity": "high",
+      "collector": "tpm",
+      "expected_state": "TpmPresent = True and TpmReady = True",
+      "applicability": {
+        "type": "when_present",
+        "paths": [
+          "checks.tpm.present"
+        ]
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.tpm.ready"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.tpm"
+      ],
+      "rationale": "The TPM is the hardware root of trust used for BitLocker key protection, credential Guard and measured boot. When it is present but not ready, those protections silently degrade.",
+      "remediation": {
+        "what_is_wrong": "The TPM is not ready, or no TPM is present on a device that should have one.",
+        "why_it_matters": "Disk-encryption keys and platform measurements cannot be sealed to hardware, weakening the protections that depend on the TPM.",
+        "what_should_be_done": "Enable the TPM in firmware, clear and re-initialise it if it is in an error state (Clear-Tpm / Initialize-Tpm), and confirm ownership is taken.",
+        "verify": "Get-Tpm | Select-Object TpmPresent, TpmReady, TpmEnabled, TpmActivated"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Trusted Platform Module (TPM) requirements for BitLocker and Credential Guard",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure TPM is enabled",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Trusted Platform Module overview",
+          "url": "https://learn.microsoft.com/en-us/windows/security/hardware-security/tpm/trusted-platform-module-overview"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SI-7 Software, Firmware, and Information Integrity",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "AUTH-001",
+      "title": "Minimum password length is at least 14 characters",
+      "category": "Authentication",
+      "weight": 10,
+      "severity": "high",
+      "collector": "authentication",
+      "expected_state": "MinimumPasswordLength >= 14",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_at_least",
+        "paths": [
+          "checks.authentication.minimum_length"
+        ],
+        "min": 14
+      },
+      "evidence_paths": [
+        "checks.authentication.minimum_length",
+        "checks.authentication.source"
+      ],
+      "rationale": "Length is the dominant factor in offline guessing resistance for local accounts. The value is read from the exported security policy rather than parsed from localised console output, so it is correct on non-English builds and on domain-joined hosts (where the effective value may come from a domain policy — the recorded source is shown with the finding).",
+      "remediation": {
+        "what_is_wrong": "The effective minimum password length is below 14 characters.",
+        "why_it_matters": "Short passwords fall to offline cracking and spraying attacks, which is how local accounts are most often taken over.",
+        "what_should_be_done": "Set 'Minimum password length' to 14 or more (secpol.msc, or secedit with MinimumPasswordLength = 14). On domain-joined devices change the domain policy instead, otherwise the local setting has no effect.",
+        "verify": "secedit /export /cfg %TEMP%\\secpol.cfg & findstr MinimumPasswordLength %TEMP%\\secpol.cfg"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Account Policies: Password Policy: Minimum password length = 14 characters",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Account Policies: Password Policy: Minimum password length",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 5 — Account Management",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Password policy",
+          "url": "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/password-policy"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "IA-5 Authenticator Management",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "AUTH-002",
+      "title": "Account lockout threshold is configured (1 to 10 attempts)",
+      "category": "Authentication",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "authentication",
+      "expected_state": "LockoutBadCount between 1 and 10",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_between",
+        "paths": [
+          "checks.authentication.lockout_threshold"
+        ],
+        "min": 1,
+        "max": 10
+      },
+      "evidence_paths": [
+        "checks.authentication.lockout_threshold",
+        "checks.authentication.source"
+      ],
+      "rationale": "A lockout threshold converts unlimited online guessing into a bounded, detectable event. Zero means no lockout at all, which is the failure this control exists to catch.",
+      "remediation": {
+        "what_is_wrong": "Account lockout is disabled or the threshold is outside the 1-10 range.",
+        "why_it_matters": "Without lockout, an attacker can guess passwords indefinitely, and repeated failures raise no signal an operator can act on.",
+        "what_should_be_done": "Set 'Account lockout threshold' to 10 or fewer invalid attempts, with 'Account lockout duration' of 15 minutes or more, or 'until an administrator unlocks the account'.",
+        "verify": "secedit /export /cfg %TEMP%\\secpol.cfg & findstr LockoutBadCount %TEMP%\\secpol.cfg"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Account Policies: Account Lockout Policy: Account lockout threshold",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Account Policies: Account Lockout Policy: Account lockout threshold",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Account lockout policy",
+          "url": "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/account-lockout-policy"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-7 Unsuccessful Logon Attempts",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "AUTH-003",
+      "title": "Password complexity requirements are enabled",
+      "category": "Authentication",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "authentication",
+      "expected_state": "PasswordComplexity = 1",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.authentication.complexity"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.authentication.complexity"
+      ],
+      "rationale": "Complexity rules prevent the weakest single-class passwords, which are the first entries in any guessing list. They are a floor, not a substitute for length.",
+      "remediation": {
+        "what_is_wrong": "Password complexity is not required.",
+        "why_it_matters": "Single-character-class passwords are trivially enumerated, and the same password is frequently reused on other systems.",
+        "what_should_be_done": "Enable 'Password must meet complexity requirements' (PasswordComplexity = 1 in the exported security policy).",
+        "verify": "secedit /export /cfg %TEMP%\\secpol.cfg & findstr PasswordComplexity %TEMP%\\secpol.cfg"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Account Policies: Password Policy: Password must meet complexity requirements = Enabled",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Account Policies: Password Policy: Password must meet complexity requirements",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Password policy",
+          "url": "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/password-policy"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "IA-5 Authenticator Management",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "AUTH-004",
+      "title": "Minimum password age is at least 1 day",
+      "category": "Authentication",
+      "weight": 4,
+      "severity": "low",
+      "collector": "authentication",
+      "expected_state": "MinimumPasswordAge >= 1",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_at_least",
+        "paths": [
+          "checks.authentication.minimum_password_age"
+        ],
+        "min": 1
+      },
+      "evidence_paths": [
+        "checks.authentication.minimum_password_age"
+      ],
+      "rationale": "A minimum age prevents a user from cycling through the password history in one sitting to return to a previous password, which would defeat the history rule.",
+      "remediation": {
+        "what_is_wrong": "Users can change their password again immediately.",
+        "why_it_matters": "Password history can be bypassed in minutes by changing the password repeatedly, so the old password can be restored.",
+        "what_should_be_done": "Set 'Minimum password age' to 1 day.",
+        "verify": "secedit /export /cfg %TEMP%\\secpol.cfg & findstr MinimumPasswordAge %TEMP%\\secpol.cfg"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Account Policies: Password Policy: Minimum password age = 1 day",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Account Policies: Password Policy: Minimum password age",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Password policy",
+          "url": "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/password-policy"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "IA-5 Authenticator Management",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "NET-RDP-001",
+      "title": "Remote Desktop is disabled unless it is required",
+      "category": "Network Security",
+      "weight": 9,
+      "severity": "medium",
+      "collector": "network_security",
+      "expected_state": "fDenyTSConnections = 1 (Remote Desktop disabled)",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.network_security.rdp.enabled"
+        ],
+        "value": false
+      },
+      "evidence_paths": [
+        "checks.network_security.rdp"
+      ],
+      "rationale": "Remote Desktop is the most exploited remote-access service on Windows and is repeatedly targeted by credential attacks. If it is not needed, the exposed service and its attack surface should not exist.",
+      "remediation": {
+        "what_is_wrong": "Remote Desktop is enabled.",
+        "why_it_matters": "An internet- or network-reachable RDP endpoint invites password spraying and exploitation of pre-authentication vulnerabilities.",
+        "what_should_be_done": "If RDP is not required, disable it: Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -Value 1. If it is required, require Network Level Authentication, restrict source addresses at the firewall, and record a device exemption with the justification.",
+        "verify": "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server' | Select-Object fDenyTSConnections"
+      },
+      "references": [
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Remote Desktop Services: Allow users to connect remotely by using Remote Desktop Services",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 4.8 — Uninstall or Disable Unnecessary Services",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "CM-7 Least Functionality",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-17 Remote Access",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "NET-SMB1-001",
+      "title": "SMBv1 is disabled on the server",
+      "category": "Network Security",
+      "weight": 10,
+      "severity": "high",
+      "collector": "network_security",
+      "expected_state": "EnableSMB1Protocol = False",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.network_security.smb1.enabled"
+        ],
+        "value": false
+      },
+      "evidence_paths": [
+        "checks.network_security.smb1",
+        "checks.network_security.smb_server"
+      ],
+      "rationale": "SMBv1 is a 1980s protocol with no integrity protection and a history of remote code execution vulnerabilities. It is also the transport used by WannaCry-class worms for lateral movement.",
+      "remediation": {
+        "what_is_wrong": "SMBv1 is enabled on the SMB server.",
+        "why_it_matters": "A single SMBv1 host can be used to relay or execute across the network, so one legacy system weakens the whole segment.",
+        "what_should_be_done": "Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force and remove the SMB1Protocol optional feature: Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart. Verify no dependency (older scanners, print devices or NAS) requires it before removing the feature.",
+        "verify": "Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Configure SMBv1 client and server",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 4 — Secure Configuration of Enterprise Assets and Software",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Detect, enable, and disable SMBv1, SMBv2, and SMBv3",
+          "url": "https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "CM-7 Least Functionality",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "NET-SMB-SIGN-001",
+      "title": "SMB server signing is required",
+      "category": "Network Security",
+      "weight": 8,
+      "severity": "high",
+      "collector": "network_security",
+      "expected_state": "RequireSecuritySignature = True",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.network_security.smb_server.require_security_signature"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.network_security.smb_server"
+      ],
+      "rationale": "Requiring SMB signing blocks NTLM relay and man-in-the-middle tampering with SMB traffic, which is the mechanism behind many lateral-movement toolkits.",
+      "remediation": {
+        "what_is_wrong": "The SMB server does not require packet signing.",
+        "why_it_matters": "Unsigned SMB traffic can be relayed and modified, letting an attacker reuse captured authentication without cracking it.",
+        "what_should_be_done": "Set-SmbServerConfiguration -RequireSecuritySignature $true -Force, or apply 'Microsoft network server: Digitally sign communications (always)' = Enabled through Group Policy.",
+        "verify": "Get-SmbServerConfiguration | Select-Object RequireSecuritySignature"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Microsoft network server: Digitally sign communications (always) = Enabled",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Microsoft network server: Digitally sign communications (always)",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Get-SmbServerConfiguration",
+          "url": "https://learn.microsoft.com/en-us/powershell/module/smbshare/get-smbserverconfiguration"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-8 Transmission Confidentiality and Integrity",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "PATCH-001",
+      "title": "Latest installed operating-system update is within 30 days",
+      "category": "Updates",
+      "weight": 10,
+      "severity": "medium",
+      "collector": "updates",
+      "expected_state": "days_since_patch <= 30",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_at_most",
+        "paths": [
+          "checks.updates.days_since_patch"
+        ],
+        "max": 30
+      },
+      "evidence_paths": [
+        "checks.updates.days_since_patch",
+        "checks.updates.latest_hotfix",
+        "checks.updates.source"
+      ],
+      "rationale": "Patch age is a proxy for exposure to publicly known vulnerabilities. The newest installed update is read from the Windows Update Agent where possible, because Get-HotFix only reports Component Based Servicing packages and misses MSI and catalogue-delivered updates.",
+      "remediation": {
+        "what_is_wrong": "No operating-system update has been installed in the last 30 days.",
+        "why_it_matters": "Publicly documented vulnerabilities with available fixes remain exploitable, and they are the most common initial access vector for commodity malware.",
+        "what_should_be_done": "Install outstanding updates (Get-WindowsUpdate / Install-WindowsUpdate or Windows Update), confirm the update service is running and not blocked by policy, then re-scan.",
+        "verify": "(New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher().Search(\"IsInstalled=0 and Type='Software'\").Updates.Count"
+      },
+      "references": [
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 7.3 — Perform Automated Operating System Patch Management",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Get-HotFix and Windows Update Agent",
+          "url": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/secedit"
+        },
+        {
+          "standard": "nist-sp-800-40r4",
+          "control": "Enterprise Patch Management Planning",
+          "url": "https://csrc.nist.gov/pubs/sp/800/40/r4/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SI-2 Flaw Remediation",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "RA-5 Vulnerability Monitoring and Scanning",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "ACCT-001",
+      "title": "Local administrator membership is minimized",
+      "category": "Account Security",
+      "weight": 7,
+      "severity": "medium",
+      "collector": "account_security",
+      "expected_state": "admin_count <= 2",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_at_most",
+        "paths": [
+          "checks.account_security.admin_count"
+        ],
+        "max": 2
+      },
+      "evidence_paths": [
+        "checks.account_security.admins",
+        "checks.account_security.admin_count"
+      ],
+      "rationale": "Every additional local administrator is another credential set that yields full control of the endpoint and can disable its protections.",
+      "remediation": {
+        "what_is_wrong": "More than two accounts are members of the local Administrators group.",
+        "why_it_matters": "Each administrator account is a complete compromise of the endpoint if its credentials leak, and unnecessary membership hides who can do what.",
+        "what_should_be_done": "Remove unnecessary members (Remove-LocalGroupMember -Group Administrators -Member <account>), keep at most one dedicated local administrator plus the domain-managed group, and use just-in-time elevation for the rest.",
+        "verify": "Get-LocalGroupMember -Group Administrators"
+      },
+      "references": [
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 5.4 — Restrict Administrator Privileges to Dedicated Administrator Accounts",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure 'Administrators' group membership is limited",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-6 Least Privilege",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-2 Account Management",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "SVC-001",
+      "title": "Selected legacy or network-facing services are not running",
+      "category": "Services",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "services",
+      "expected_state": "None of RemoteRegistry, TlntSvr, SSDPSRV or upnphost is running",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "list_empty",
+        "paths": [
+          "checks.services.suspicious"
+        ]
+      },
+      "evidence_paths": [
+        "checks.services.suspicious",
+        "checks.services.checked_services"
+      ],
+      "rationale": "These services expose remote registry access, a telnet server and device discovery protocols that are regular lateral-movement and reconnaissance targets. None is required on a hardened workstation.",
+      "remediation": {
+        "what_is_wrong": "A legacy or discovery service is running.",
+        "why_it_matters": "Remote Registry allows remote modification of the endpoint's configuration and is used by several credential-theft tools; SSDP/UPnP expose the host to the local network.",
+        "what_should_be_done": "Stop and disable the service (Stop-Service -Name <name>; Set-Service -Name <name> -StartupType Disabled) after confirming no business dependency, then re-scan.",
+        "verify": "Get-Service RemoteRegistry, TlntSvr, SSDPSRV, upnphost | Select-Object Name, Status, StartType"
+      },
+      "references": [
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 4.8 — Uninstall or Disable Unnecessary Services",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Windows services security and permissions",
+          "url": "https://learn.microsoft.com/en-us/windows-server/security/windows-services-security-and-permissions"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "CM-7 Least Functionality",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "ACL-001",
+      "title": "System configuration directory ACLs are protected",
+      "category": "Access Control",
+      "weight": 5,
+      "severity": "medium",
+      "collector": "access_control",
+      "expected_state": "AreAccessRulesProtected = True on C:\\Windows\\System32\\config",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.access_control.system_config_acl_protected"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.access_control"
+      ],
+      "rationale": "The configuration directory holds the SAM, SECURITY and SYSTEM hives. If inheritance from a permissive parent is re-enabled, the local account database becomes readable to non-administrators.",
+      "remediation": {
+        "what_is_wrong": "Access rules on the system configuration directory are not protected.",
+        "why_it_matters": "Credential material and local policy can be read or altered by accounts that should have no access to them.",
+        "what_should_be_done": "Re-enable protection of the ACL: icacls C:\\Windows\\System32\\config /inheritance:r with SYSTEM and Administrators full control, matching the default Windows ACL.",
+        "verify": "(Get-Acl C:\\Windows\\System32\\config).AreAccessRulesProtected"
+      },
+      "references": [
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure permissions on the system configuration directory are restricted",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "icacls",
+          "url": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-3 Access Enforcement",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AC-6 Least Privilege",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "REG-WDIGEST-001",
+      "title": "WDigest credential caching is disabled",
+      "category": "Registry Hardening",
+      "weight": 8,
+      "severity": "high",
+      "collector": "registry",
+      "expected_state": "UseLogonCredential is absent or 0",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.registry.wdigest_credential_caching_disabled"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.registry.wdigest"
+      ],
+      "rationale": "With WDigest credential caching enabled, the plaintext password is retained in LSASS memory, where credential-dumping tools recover it directly. CISA documents this as a specific eviction countermeasure.",
+      "remediation": {
+        "what_is_wrong": "WDigest is configured to cache plaintext credentials (or the value is unknown).",
+        "why_it_matters": "Any credential dump of LSASS yields reusable plaintext passwords instead of hashes, removing the need for cracking and enabling immediate lateral movement.",
+        "what_should_be_done": "Set HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest\\UseLogonCredential to 0 (or delete the value), reboot, and confirm it persists after Group Policy refresh. On systems older than Windows 8.1/2012 R2, KB2871997 is required.",
+        "verify": "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest' -Name UseLogonCredential"
+      },
+      "references": [
+        {
+          "standard": "cisa-countermeasures",
+          "control": "CM0087 — Disable Credential Caching in WDigest",
+          "url": "https://www.cisa.gov/eviction-strategies-tool/info-countermeasures/CM0087"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure 'WDigest Authentication' is disabled",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "IA-5 Authenticator Management",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-28 Protection of Information at Rest",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "REG-LLMNR-001",
+      "title": "Link-Local Multicast Name Resolution (LLMNR) is disabled",
+      "category": "Registry Hardening",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "registry",
+      "expected_state": "EnableMulticast = 0",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.registry.llmnr_disabled"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.registry.llmnr"
+      ],
+      "rationale": "LLMNR answers are unauthenticated, so any host on the segment can answer a resolution request and harvest NetNTLM hashes for offline cracking or relay.",
+      "remediation": {
+        "what_is_wrong": "LLMNR name resolution is enabled.",
+        "why_it_matters": "An attacker on the same network can impersonate any unresolved name and collect authentication material without user interaction.",
+        "what_should_be_done": "Set HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient\\EnableMulticast to 0 via Group Policy ('Turn off multicast name resolution'), and disable NetBIOS over TCP/IP on the same adapters.",
+        "verify": "Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient' -Name EnableMulticast"
+      },
+      "references": [
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure 'Turn off multicast name resolution' is set to 'Enabled'",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Get-DnsClientGlobalSetting",
+          "url": "https://learn.microsoft.com/en-us/powershell/module/dnsclient/get-dnsclientglobalsetting"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 9 — Email and Web Browser Protections",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-20 Secure Name/Address Resolution Service",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "REG-AUTORUN-001",
+      "title": "AutoRun and AutoPlay are disabled on all drives",
+      "category": "Registry Hardening",
+      "weight": 5,
+      "severity": "medium",
+      "collector": "registry",
+      "expected_state": "NoDriveTypeAutoRun = 255",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.registry.autorun_disabled"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.registry.autorun"
+      ],
+      "rationale": "AutoRun executes content from removable media the moment it is attached. Disabling it across all drive types removes a delivery path that requires no user decision.",
+      "remediation": {
+        "what_is_wrong": "AutoRun is enabled for at least one drive type.",
+        "why_it_matters": "Malicious content on removable media can execute automatically, which is how air-gapped environments are commonly bridged.",
+        "what_should_be_done": "Set HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\NoDriveTypeAutoRun to 255 (0xFF) and apply 'Turn off Autoplay' = 'Enabled: All drives'.",
+        "verify": "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer' -Name NoDriveTypeAutoRun"
+      },
+      "references": [
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure 'Turn off Autoplay' is set to 'Enabled: All drives'",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure 'Do not execute any autorun commands' is set to 'Enabled'",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 4 — Secure Configuration of Enterprise Assets and Software",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "CM-6 Configuration Settings",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "REG-NETLOGON-001",
+      "title": "Netlogon secure-channel signing and sealing are required",
+      "category": "Registry Hardening",
+      "weight": 6,
+      "severity": "medium",
+      "collector": "registry",
+      "expected_state": "RequireSignOrSeal = 1, SignSecureChannel = 1, SealSecureChannel = 1",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "all_int_at_least",
+        "paths": [
+          "checks.registry.netlogon.require_sign_or_seal.value",
+          "checks.registry.netlogon.sign_secure_channel.value",
+          "checks.registry.netlogon.seal_secure_channel.value"
+        ],
+        "min": 1
+      },
+      "evidence_paths": [
+        "checks.registry.netlogon"
+      ],
+      "rationale": "Signing and sealing the computer-account secure channel protects the domain authentication traffic from tampering and disclosure — the basis of zero-login attacks such as Zerologon-class exploitation.",
+      "remediation": {
+        "what_is_wrong": "Netlogon secure-channel signing or sealing is not required.",
+        "why_it_matters": "Unsigned or unsealed domain authentication traffic can be intercepted or modified, allowing credential abuse and machine-account takeover.",
+        "what_should_be_done": "Apply the Microsoft Security Baseline settings 'Domain member: Digitally encrypt or sign secure channel data (always)' = Enabled, 'Domain member: Digitally sign secure channel data (when possible)' = Enabled, and 'Domain member: Require strong (Windows 2000 or later) session key' = Enabled.",
+        "verify": "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Netlogon\\Parameters' | Select-Object RequireSignOrSeal, SignSecureChannel, SealSecureChannel"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Domain member: Digitally encrypt or sign secure channel data (always) = Enabled",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Domain member: Digitally encrypt or sign secure channel data (always)",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Domain member: Digitally encrypt or sign secure channel data",
+          "url": "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/domain-member-digitally-encrypt-or-sign-secure-channel-data-always"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-8 Transmission Confidentiality and Integrity",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "REG-LMCOMPAT-001",
+      "title": "LAN Manager authentication level refuses LM and NTLM",
+      "category": "Registry Hardening",
+      "weight": 8,
+      "severity": "high",
+      "collector": "registry",
+      "expected_state": "LmCompatibilityLevel >= 5 (send NTLMv2 only, refuse LM and NTLM)",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "int_at_least",
+        "paths": [
+          "checks.registry.lm_compatibility_level.value"
+        ],
+        "min": 5
+      },
+      "evidence_paths": [
+        "checks.registry.lm_compatibility_level"
+      ],
+      "rationale": "Weak LM and NTLM responses can be captured and cracked in seconds, or relayed. Level 5 forces NTLMv2 and refuses the legacy protocols outright.",
+      "remediation": {
+        "what_is_wrong": "The LAN Manager authentication level still permits LM or NTLM responses.",
+        "why_it_matters": "Captured LM/NTLM challenge responses are trivially cracked, giving an attacker reusable credentials from passive network access.",
+        "what_should_be_done": "Set 'Network security: LAN Manager authentication level' to 'Send NTLMv2 response only. Refuse LM and NTLM' (LmCompatibilityLevel = 5), and audit for legacy applications that still require NTLM before enforcing it.",
+        "verify": "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name LmCompatibilityLevel"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Network security: LAN Manager authentication level = Send NTLMv2 response only. Refuse LM and NTLM",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Network security: LAN Manager authentication level",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "Network security: LAN Manager authentication level",
+          "url": "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "IA-5 Authenticator Management",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "SC-8 Transmission Confidentiality and Integrity",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    },
+    {
+      "control_id": "REG-PSLOGGING-001",
+      "title": "PowerShell script block logging is enabled",
+      "category": "Registry Hardening",
+      "weight": 5,
+      "severity": "medium",
+      "collector": "registry",
+      "expected_state": "ScriptBlockLogging Enabled = 1",
+      "applicability": {
+        "type": "always"
+      },
+      "evaluation": {
+        "op": "bool_is",
+        "paths": [
+          "checks.registry.powershell_script_block_logging_enabled"
+        ],
+        "value": true
+      },
+      "evidence_paths": [
+        "checks.registry.powershell_script_block_logging"
+      ],
+      "rationale": "PowerShell is the most common post-exploitation and lateral-movement toolchain on Windows. Script block logging records the actual code that ran, including obfuscated and dynamically constructed commands.",
+      "remediation": {
+        "what_is_wrong": "PowerShell script block logging is not enabled.",
+        "why_it_matters": "Malicious PowerShell activity leaves little evidence, so intrusions are detected late or not at all, and forensic reconstruction is impossible.",
+        "what_should_be_done": "Set HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging\\EnableScriptBlockLogging = 1, forward the PowerShell operational log to the SIEM, and ensure the log size is sufficient.",
+        "verify": "Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging' -Name EnableScriptBlockLogging"
+      },
+      "references": [
+        {
+          "standard": "ms-security-baseline",
+          "control": "Turn on PowerShell Script Block Logging = Enabled",
+          "url": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+        },
+        {
+          "standard": "cis-win11-benchmark",
+          "control": "Ensure 'Turn on PowerShell Script Block Logging' is set to 'Enabled'",
+          "url": "https://www.cisecurity.org/cis-benchmarks"
+        },
+        {
+          "standard": "microsoft-learn",
+          "control": "about_Logging_Windows",
+          "url": "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_logging_windows"
+        },
+        {
+          "standard": "cis-controls-v8.1",
+          "control": "CIS Control 8 — Audit Log Management",
+          "url": "https://www.cisecurity.org/controls"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AU-2 Event Logging",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        },
+        {
+          "standard": "nist-sp-800-53r5",
+          "control": "AU-12 Audit Record Generation",
+          "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+        }
+      ]
+    }
+  ]
+}

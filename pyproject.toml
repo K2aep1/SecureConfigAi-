@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secureconfigai"
+version = "4.0.0"
+description = "Windows endpoint security-configuration assessment with a deterministic control engine and advisory-only AI"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "SecureConfigAI_v3 authors" }]
+keywords = ["windows", "security", "baseline", "cis", "assessment", "fastapi"]
+
+# Runtime dependencies live in backend/requirements.txt (runtime ranges) and
+# backend/requirements.lock (exact tested pins). They are intentionally not duplicated
+# here: the deployment target is the backend virtual environment, and one list is easier
+# to keep honest than two.
+dependencies = []
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["backend", "scanner"]
+extend-exclude = [
+    "backend/.venv",
+    "frontend/node_modules",
+    "frontend/dist",
+    "scanner/manual_scan_output",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "ASYNC", "S"]
+ignore = [
+    "S101",   # assert is used deliberately throughout the test suite
+    "S104",   # binding to 0.0.0.0 is a deployment choice, not a code defect
+    "S105",   # the placeholder secrets are configuration constants, not credentials
+    "S106",   # same: function arguments used by tests
+    "S311",   # random.jitter for retry backoff is not a security decision
+    "S603",   # the scanner is a subprocess-by-design component
+    "S607",   # partial executable paths are resolved by the operating system here
+    "B008",   # FastAPI's Depends()/Query() defaults are the documented idiom
+    "UP046",  # PEP 695 generics are a style preference; the Generic[T] form is clearer here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*" = ["S", "B011"]
+"backend/tools/build_baseline.py" = ["E501"]  # a generated data-building tool
+"scanner/scripts.py" = ["E501"]               # embedded PowerShell is not wrapped
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "scanner"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.coverage.run]
+source = ["backend/app", "scanner"]
+omit = ["backend/tests/*", "backend/alembic/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

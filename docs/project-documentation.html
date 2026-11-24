@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SecureConfigAI - Project Documentation</title>
+  <style>
+    :root {
+      --bg: #07131d;
+      --panel: #0f1f2f;
+      --panel-2: #142a3c;
+      --text: #eaf2ff;
+      --muted: #a8c0d8;
+      --accent: #4ade80;
+      --accent-2: #38bdf8;
+      --warning: #fbbf24;
+      --danger: #fb7185;
+      --border: rgba(148, 163, 184, 0.22);
+      --shadow: rgba(0,0,0,0.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Segoe UI, Tahoma, Arial, sans-serif;
+      background: linear-gradient(180deg, #040d17 0%, #0b1723 100%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+    .topbar {
+      background: rgba(15, 31, 47, 0.85);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 24px;
+      box-shadow: 0 10px 25px var(--shadow);
+      margin-bottom: 28px;
+    }
+    h1, h2, h3, h4 { margin-top: 0; }
+    h1 {
+      font-size: 2.6rem;
+      margin-bottom: 8px;
+    }
+    h2 {
+      margin-top: 36px;
+      color: #dff7ee;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+      font-size: 1.7rem;
+    }
+    h3 {
+      color: #bfe7ff;
+      margin-top: 18px;
+      margin-bottom: 10px;
+      font-size: 1.2rem;
+    }
+    p, li { color: var(--muted); }
+    a { color: var(--accent-2); }
+    .badge {
+      display: inline-block;
+      background: rgba(74, 222, 128, 0.12);
+      color: var(--accent);
+      border: 1px solid rgba(74,222,128,0.35);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 18px;
+      margin-top: 18px;
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(20,42,60,0.95), rgba(15,31,47,0.9));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      box-shadow: 0 8px 18px rgba(0,0,0,0.15);
+    }
+    .card h3 { margin-top: 0; }
+    ul { padding-left: 20px; }
+    code, pre {
+      font-family: Consolas, 'Courier New', monospace;
+      background: rgba(15, 23, 42, 0.85);
+      color: #d5f8ff;
+      border: 1px solid rgba(148,163,184,0.22);
+      border-radius: 8px;
+    }
+    code {
+      padding: 2px 6px;
+      font-size: 0.93em;
+    }
+    pre {
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin-top: 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      background: rgba(19, 33, 46, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: rgba(17,40,57,0.9);
+      color: #dff7ee;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 22px;
+    }
+    @media (max-width: 900px) {
+      .two-col { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="topbar">
+      <div class="badge">SecureConfigAI</div>
+      <h1>Project Documentation</h1>
+      <p>Unified project overview for the full SecureConfigAI application, including frontend, backend, scanner, AI workflow, security processes, run instructions, and toolchain details.</p>
+    </div>
+
+    <section>
+      <h2>1. Project Overview</h2>
+      <p>SecureConfigAI is a security configuration analysis platform that collects device and security configuration data, checks it against security rules, scores the device posture, and presents findings, risk levels, AI explanations, and recommended remediation steps.</p>
+      <p>The application works as a single unified project and does not use separate v1/v2/v3 folders or duplicate codebases. The design document is treated as a roadmap, while the implementation itself remains one coherent project.</p>
+      <div class="grid">
+        <div class="card">
+          <h3>Core Purpose</h3>
+          <ul>
+            <li>Detect device information and scan context</li>
+            <li>Collect security-related configuration</li>
+            <li>Analyze findings using deterministic rule checks</li>
+            <li>Calculate a risk/security score</li>
+            <li>Generate AI explanations and recommendations</li>
+            <li>Show trends, history, and reporting data</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Key Technologies</h3>
+          <ul>
+            <li>Frontend: React + TypeScript + Vite</li>
+            <li>Backend: FastAPI + SQLAlchemy + SQLite</li>
+            <li>Scanner: Python-based local security collector</li>
+            <li>AI: OpenAI-compatible / DeepSeek-compatible abstraction</li>
+            <li>Security logic: deterministic rule engine with scoring</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. Folder Structure</h2>
+      <div class="card">
+        <pre>C:\Users\walid\OneDrive\Desktop\SecureConfigAI
+├── README.md
+├── project-documentation.html
+├── backend/
+│   ├── .env
+│   ├── .env.example
+│   ├── .venv/
+│   ├── requirements.txt
+│   ├── secureconfigai.db
+│   ├── test_secureconfigai.db
+│   ├── app/
+│   │   ├── api/
+│   │   │   └── v1/
+│   │   │       ├── ai.py
+│   │   │       ├── auth.py
+│   │   │       ├── router.py
+│   │   │       └── scans.py
+│   │   ├── core/
+│   │   │   ├── config.py
+│   │   │   ├── database.py
+│   │   │   ├── dependencies.py
+│   │   │   └── security.py
+│   │   ├── db/
+│   │   │   ├── base.py
+│   │   │   ├── models.py
+│   │   │   └── session.py
+│   │   ├── services/
+│   │   │   ├── ai_client.py
+│   │   │   ├── scoring.py
+│   │   │   └── report_generator.py
+│   │   ├── main.py
+│   │   ├── schemas.py
+│   │   └── __init__.py
+│   ├── tests/
+│   │   └── test_app.py
+│   └── uploads/
+├── frontend/
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── index.html
+│   ├── node_modules/
+│   ├── public/
+│   └── src/
+│       ├── App.tsx
+│       ├── index.css
+│       ├── main.tsx
+│       └── vite-env.d.ts
+├── scanner/
+│   ├── __init__.py
+│   ├── cli.py
+│   ├── normalizer.py
+│   ├── base/
+│   │   └── collector.py
+│   ├── .scan-cache/
+│   └── _live_check/
+├── docs/
+│   └── (design notes / supporting documentation)
+└── uploads/
+</pre>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. File and Folder Explanation</h2>
+
+      <h3>Project Root</h3>
+      <ul>
+        <li><strong>README.md</strong> — main project overview, setup, use instructions, and run steps.</li>
+        <li><strong>project-documentation.html</strong> — this project reference document for file map, architecture, and tool versions.</li>
+      </ul>
+
+      <h3>backend/</h3>
+      <ul>
+        <li><strong>app/main.py</strong> — FastAPI application entry point, CORS config, startup setup, app router registration.</li>
+        <li><strong>app/api/v1/auth.py</strong> — user registration, login, refresh, logout, admin/demo handling.</li>
+        <li><strong>app/api/v1/scans.py</strong> — scan lifecycle, device detection, scan start, results retrieval, before/after compare, drift logic.</li>
+        <li><strong>app/api/v1/ai.py</strong> — AI endpoints for explanation, recommendations, priorities, reports, assistant use.</li>
+        <li><strong>app/core/config.py</strong> — environment settings and provider configuration for OpenAI / DeepSeek / OLLAMA.</li>
+        <li><strong>app/core/database.py</strong> — database engine and session creation.</li>
+        <li><strong>app/core/dependencies.py</strong> — authentication and user security dependency flow.</li>
+        <li><strong>app/core/security.py</strong> — password hashing, JWT token creation, validation, refresh tokens.</li>
+        <li><strong>app/db/models.py</strong> — SQLAlchemy data models: User, Device, Scan, Finding, Recommendation, Policy, etc.</li>
+        <li><strong>app/db/base.py</strong> — SQLAlchemy Base metadata.</li>
+        <li><strong>app/schemas.py</strong> — request/response models for auth, scans, findings, recommendations, AI responses.</li>
+        <li><strong>app/services/ai_client.py</strong> — shared AI abstraction layer that calls OpenAI-compatible providers and provides local fallback when quota is exhausted.</li>
+        <li><strong>app/services/scoring.py</strong> — security score and risk calculation logic.</li>
+        <li><strong>app/services/report_generator.py</strong> — PDF/report generation support for exports and reporting.</li>
+        <li><strong>tests/test_app.py</strong> — validation tests for backend behavior.</li>
+        <li><strong>requirements.txt</strong> — Python dependency list.</li>
+        <li><strong>.env</strong> — active local configuration including JWT secret and AI credentials, not meant for public sharing.</li>
+        <li><strong>.env.example</strong> — safe template for environment config.</li>
+        <li><strong>uploads/</strong> — directory used for uploaded file scans and reports.</li>
+      </ul>
+
+      <h3>frontend/</h3>
+      <ul>
+        <li><strong>src/App.tsx</strong> — main dashboard, scan flow, live device display, AI explanation panels, results overview.</li>
+        <li><strong>src/main.tsx</strong> — React bootstrap entry.</li>
+        <li><strong>src/index.css</strong> — UI styling and Tailwind layers.</li>
+        <li><strong>index.html</strong> — HTML root for Vite frontend.</li>
+        <li><strong>package.json</strong> — frontend package commands and dependency definitions.</li>
+      </ul>
+
+      <h3>scanner/</h3>
+      <ul>
+        <li><strong>cli.py</strong> — CLI entry for collecting local security configuration and writing structured results.</li>
+        <li><strong>normalizer.py</strong> — converts raw scanner data into normalized format used by the backend rule engine.</li>
+        <li><strong>base/collector.py</strong> — reusable local collection logic for security settings.</li>
+        <li><strong>.scan-cache/</strong> — temporary scan output generated during local operation.</li>
+        <li><strong>_live_check/</strong> — local validation and example scan output files.</li>
+      </ul>
+
+      <h3>docs/</h3>
+      <ul>
+        <li>Supporting research, design notes, and planning documentation for the project roadmap.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>4. Architecture</h2>
+      <div class="two-col">
+        <div class="card">
+          <h3>Request flow</h3>
+          <ul>
+            <li>User opens the dashboard</li>
+            <li>Frontend authenticates or creates a demo admin account</li>
+            <li>User clicks Start Security Scan</li>
+            <li>Frontend sends scan payload to backend</li>
+            <li>Backend detects/creates device</li>
+            <li>Local scanner collects configuration</li>
+            <li>Backend normalizes and analyzes the data</li>
+            <li>Findings are stored and scored</li>
+            <li>AI explanation and recommendation APIs can be called</li>
+            <li>Dashboard renders summary, findings, categories, score, and actions</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Core rule</h3>
+          <p>Deterministic security checks remain the source of truth for findings. AI is used to explain and prioritize results, not to invent findings or fake configuration values.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>5. Runtime Workflow</h2>
+      <ol>
+        <li>Frontend loads dashboard and auto-logs in to the demo session.</li>
+        <li>One-click scan uses the existing backend scan service and real scan payload.</li>
+        <li>Backend calls the scanner to gather local configuration.</li>
+        <li>Normalized results are converted into security findings.</li>
+        <li>Scan result model calculates security score, risk level, and counts.</li>
+        <li>Findings are shown in the UI by severity and category.</li>
+        <li>AI APIs explain findings and generate remediation guidance when a funded provider is available.</li>
+        <li>Trend/history and comparison data are read from stored scan results.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>6. Important Files</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Importance</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend\app\main.py</td><td>FastAPI app startup and router registration.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend\app\api\v1\scans.py</td><td>Core scan pipeline and results processing.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend\app\api\v1\ai.py</td><td>AI APIs for explanation, recommendations, trends, risk priority.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend\app\services\ai_client.py</td><td>AI provider abstraction and fallback logic.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend\app\db\models.py</td><td>ORM data models for users, devices, scans, findings, policies.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend\app\schemas.py</td><td>API contract validation models.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\frontend\src\App.tsx</td><td>Main dashboard and scan orchestration UI.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\scanner\cli.py</td><td>Local configuration collector entry.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\scanner\normalizer.py</td><td>Converts raw data into backend-friendly scan output.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\README.md</td><td>Primary setup and usage guide.</td></tr>
+          <tr><td>C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend\.env</td><td>Environment variables for app config and provider keys.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>7. Setup and Run Instructions</h2>
+      <h3>Backend</h3>
+      <pre>cd C:\Users\walid\OneDrive\Desktop\SecureConfigAI\backend
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload</pre>
+      <p>API is available at:</p>
+      <ul>
+        <li>http://localhost:8001</li>
+        <li>http://localhost:8001/docs</li>
+        <li>http://localhost:8001/health</li>
+      </ul>
+
+      <h3>Frontend</h3>
+      <pre>cd C:\Users\walid\OneDrive\Desktop\SecureConfigAI\frontend
+npm install
+npm run dev -- --host 0.0.0.0</pre>
+      <p>Open:</p>
+      <ul>
+        <li>http://localhost:5173</li>
+      </ul>
+
+      <h3>Scanner</h3>
+      <pre>cd C:\Users\walid\OneDrive\Desktop\SecureConfigAI\scanner
+..\backend\.venv\Scripts\python.exe -m scanner.cli --output .\scan_output</pre>
+    </section>
+
+    <section>
+      <h2>8. Tools Used and Versions</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Tool / Platform</th>
+            <th>Version / Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Python</td><td>3.14.6</td></tr>
+          <tr><td>Node.js</td><td>v24.16.0</td></tr>
+          <tr><td>npm</td><td>11.13.0</td></tr>
+          <tr><td>Vite</td><td>5.4.21</td></tr>
+          <tr><td>React</td><td>18.3.1</td></tr>
+          <tr><td>React DOM</td><td>18.3.1</td></tr>
+          <tr><td>TypeScript</td><td>5.6.3</td></tr>
+          <tr><td>FastAPI</td><td>0.116.1</td></tr>
+          <tr><td>Uvicorn</td><td>0.35.0</td></tr>
+          <tr><td>SQLAlchemy</td><td>2.0.43</td></tr>
+          <tr><td>Pydantic</td><td>2.11.7</td></tr>
+          <tr><td>Pydantic Settings</td><td>2.10.1</td></tr>
+          <tr><td>python-jose</td><td>3.5.0</td></tr>
+          <tr><td>passlib[bcrypt]</td><td>1.7.4</td></tr>
+          <tr><td>python-multipart</td><td>0.0.20</td></tr>
+          <tr><td>OpenAI SDK</td><td>1.109.1</td></tr>
+          <tr><td>ReportLab</td><td>4.4.3</td></tr>
+          <tr><td>Pytest</td><td>8.4.2</td></tr>
+          <tr><td>Pytest Asyncio</td><td>1.1.0</td></tr>
+          <tr><td>HTTPX</td><td>0.28.1</td></tr>
+          <tr><td>PowerShell</td><td>Windows default shell used for local execution</td></tr>
+          <tr><td>Browser automation</td><td>Playwright browser tools used to validate UI workflow</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>9. Security and Privacy Notes</h2>
+      <ul>
+        <li>Only security-related configuration is collected, not private personal files or data.</li>
+        <li>Passwords and sensitive personal documents are not collected by design.</li>
+        <li>Device detection is limited to system/security-relevant information such as hostname, OS, version, build, and device metadata.</li>
+        <li>AI guidance is grounded in actual scan results and should not invent findings.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>10. Summary</h2>
+      <p>The final SecureConfigAI project is a single, unified application that combines a modern React dashboard, a FastAPI backend, a Python scanner, a SQLite database, and AI-powered explanations and recommendations. It is structured around a real security-analysis workflow:</p>
+      <p><strong>Scan → Collect configuration → Normalize → Analyze → Score → Findings → AI explanation → Recommendations → Report/History</strong></p>
+      <p>The project is designed to run locally in a development environment and to remain coherent as one product rather than separate versioned copies.</p>
+    </section>
+  </div>
+</body>
+</html>
