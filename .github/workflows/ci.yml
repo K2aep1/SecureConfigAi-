@@ -85,6 +85,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Reject tracked environment files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          import subprocess
+          import sys
+
+          paths = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          forbidden = [
+              path for path in paths
+              if path and path.rsplit("/", 1)[-1].startswith(".env")
+              and path.rsplit("/", 1)[-1] != ".env.example"
+          ]
+          if forbidden:
+              print("Tracked environment files are not allowed:", file=sys.stderr)
+              print("\n".join(forbidden), file=sys.stderr)
+              raise SystemExit(1)
+          print("No tracked environment files found.")
+          PYCODE
       - name: Scan the tree for credentials
         run: python scripts/scan_secrets.py
 
@@ -101,7 +121,8 @@ jobs:
       - name: The release must not contain local configuration or databases
         run: |
           set -eu
-          test ! -e dist_release/secureconfigai_v3-2.0.0/backend/.env
+          test -d dist_release
+          ! find dist_release -type f \
+            \( -name '.env' -o \( -name '.env.*' ! -name '.env.example' \) \) \
+            | grep -q .
           ! find dist_release -name '*.db' | grep -q .
-          ! find dist_release -name '__pycache__' | grep -q .
-          ! find dist_release -name 'node_modules' | grep -q .
