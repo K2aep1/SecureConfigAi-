@@ -1,12 +1,7 @@
+# SecureConfigAI
 
-
-
-
-
-
-SecureConfigAI_v4
-Windows endpoint security-configuration assessment with a deterministic control engine
-and an advisory-only AI explanation layer.
+Windows endpoint security-configuration assessment with a **deterministic** control engine
+and an **advisory-only** AI explanation layer.
 
 V4 is a security-hardening release. Headline changes versus V3: atomic refresh-token
 rotation (race-proof reuse detection), lockout-counter decay, an optionally keyed
