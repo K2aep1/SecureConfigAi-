@@ -1,4 +1,4 @@
-# SecureConfigAI_v4
+# SecureConfigAI
 
 Windows endpoint security-configuration assessment with a **deterministic** control engine
 and an **advisory-only** AI explanation layer.
