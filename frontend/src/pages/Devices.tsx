@@ -10,12 +10,12 @@
  * control `not_applicable` with the recorded reason.
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createDeviceExemption,
-  deleteDeviceExemption,
   deleteDevice,
+  deleteDeviceExemption,
   listDeviceExemptions,
   listDevices,
   queryKeys,
@@ -25,7 +25,7 @@ import {
 import { DEFAULT_PAGE_SIZE, useCursorList } from '../hooks/useCursorList';
 import { useDocumentTitle } from '../hooks/useAppData';
 import { DataTable, LoadMore, type Column } from '../components/DataTable';
-import { EvidenceQualityBadge, RiskLevelBadge, NeutralBadge } from '../components/Badges';
+import { EvidenceQualityBadge, NeutralBadge, RiskLevelBadge } from '../components/Badges';
 import { Drawer } from '../components/Drawer';
 import { EmptyState, ErrorState, Notice } from '../components/States';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -36,19 +36,208 @@ import { CRITICALITY_CHOICES, CRITICALITY_EXPLANATION, criticalityChoice } from 
 import { formatDateTime, formatPercent, formatRelative, formatScore } from '../lib/format';
 import type { Device, Exemption } from '../types';
 
+/* ---------- Constants ---------- */
+
+const DEVICES_STALE_MS = 15_000;
+const EXEMPTIONS_STALE_MS = 30_000;
+const DEFAULT_OS_TYPE = 'windows';
+const DEFAULT_CRITICALITY = '3';
+
+interface RegisterDraft {
+  hostname: string;
+  osType: string;
+  osVersion: string;
+  osBuild: string;
+  criticality: string;
+}
+
+interface ExemptionDraft {
+  controlId: string;
+  reason: string;
+  expiresAt: string;
+}
+
+const EMPTY_EXEMPTION: ExemptionDraft = { controlId: '', reason: '', expiresAt: '' };
+
+/* ---------- Pure helpers ---------- */
+
+function scoreCell(device: Device): ReactNode {
+  const score = device.latest?.security_score;
+  if (score === null || score === undefined) {
+    return (
+      <span className="muted" title="This device has no completed assessment yet.">
+        not assessed
+      </span>
+    );
+  }
+  return `${formatScore(score)}/100`;
+}
+
+function riskCell(device: Device): ReactNode {
+  const latest = device.latest;
+  if (!latest) return <span className="muted">—</span>;
+  return (
+    <span className="cell-stack">
+      <RiskLevelBadge level={latest.risk_level} score={latest.risk_score} />
+      <span className="cell-subtle">risk score {formatScore(latest.risk_score)}</span>
+    </span>
+  );
+}
+
+function evidenceCell(device: Device): ReactNode {
+  return device.latest ? (
+    <EvidenceQualityBadge quality={device.latest.evidence_quality} />
+  ) : (
+    <span className="muted">—</span>
+  );
+}
+
+function criticalityOptionLabel(option: (typeof CRITICALITY_CHOICES)[number]): string {
+  return `${option.value} · ${option.label}`;
+}
+
+/* ---------- Page ---------- */
+
 export default function DevicesPage() {
   useDocumentTitle('Devices · SecureConfigAI');
-  const toast = useToast();
-  const confirm = useConfirm();
-  const queryClient = useQueryClient();
-  const [exemptionsFor, setExemptionsFor] = useState<Device | null>(null);
-  const [showRegister, setShowRegister] = useState(false);
 
   const devices = useCursorList<Device>({
     queryKey: queryKeys.devices.list(),
     fetchPage: (cursor, signal) => listDevices({ limit: DEFAULT_PAGE_SIZE, cursor }, signal),
-    staleTime: 15_000,
+    staleTime: DEVICES_STALE_MS,
   });
+
+  const [exemptionsFor, setExemptionsFor] = useState<Device | null>(null);
+  const [showRegister, setShowRegister] = useState(false);
+  const { remove, requestRemove } = useDeviceRemoval();
+
+  const columns = useMemo(
+    () =>
+      buildDeviceColumns({
+        removing: remove.isPending,
+        onExemptions: setExemptionsFor,
+        onRemove: (device) => void requestRemove(device),
+      }),
+    [remove.isPending, requestRemove],
+  );
+
+  return (
+    <div className="page">
+      <PageIntro
+        onRefresh={devices.reload}
+        onRegister={() => setShowRegister(true)}
+      />
+
+      <Notice tone="info" title="How criticality is used">
+        {CRITICALITY_EXPLANATION}
+      </Notice>
+
+      <DeviceInventory
+        devices={devices}
+        columns={columns}
+        onRegister={() => setShowRegister(true)}
+      />
+
+      <RegisterDeviceDrawer open={showRegister} onClose={() => setShowRegister(false)} />
+      <DeviceExemptionsDrawer device={exemptionsFor} onClose={() => setExemptionsFor(null)} />
+    </div>
+  );
+}
+
+/* ---------- Sections ---------- */
+
+function PageIntro({
+  onRefresh,
+  onRegister,
+}: {
+  onRefresh: () => void;
+  onRegister: () => void;
+}) {
+  return (
+    <div className="page-intro">
+      <div>
+        <span className="eyebrow">Endpoint inventory</span>
+        <h2>Devices</h2>
+        <p>
+          Registered endpoints with their most recent assessed posture. Criticality is an input to
+          the risk calculation, not to the control verdicts.
+        </p>
+      </div>
+      <div className="inline-actions">
+        <button type="button" className="button button-light" onClick={onRefresh}>
+          Refresh
+        </button>
+        <button type="button" className="button button-primary" onClick={onRegister}>
+          Register device
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DeviceInventory({
+  devices,
+  columns,
+  onRegister,
+}: {
+  devices: ReturnType<typeof useCursorList<Device>>;
+  columns: Column<Device>[];
+  onRegister: () => void;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Registered devices</h2>
+          <p>
+            {devices.count} loaded{devices.hasMore ? ' · more available' : ''}
+          </p>
+        </div>
+      </div>
+
+      {devices.isError ? (
+        <ErrorState error={devices.error} onRetry={devices.reload} scope="Device inventory" />
+      ) : (
+        <>
+          <DataTable
+            columns={columns}
+            rows={devices.items}
+            rowKey={(row) => row.id}
+            caption="Registered devices"
+            busy={devices.isLoading}
+            busyLabel="Loading devices…"
+            empty={
+              <EmptyState
+                title="No devices registered"
+                description="A device is registered automatically by its first scan, or manually with POST /devices/register."
+                action={
+                  <button type="button" className="button button-primary" onClick={onRegister}>
+                    Register device
+                  </button>
+                }
+              />
+            }
+          />
+          <LoadMore
+            hasMore={devices.hasMore}
+            isLoading={devices.isLoadingMore}
+            onLoadMore={devices.loadMore}
+            loadedCount={devices.count}
+            pageSize={DEFAULT_PAGE_SIZE}
+            unit="devices"
+          />
+        </>
+      )}
+    </section>
+  );
+}
+
+/* ---------- Device removal ---------- */
+
+function useDeviceRemoval() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const queryClient = useQueryClient();
 
   const remove = useMutation({
     mutationFn: (deviceId: string) => deleteDevice(deviceId),
@@ -65,7 +254,7 @@ export default function DevicesPage() {
     },
   });
 
-  async function onRemove(device: Device) {
+  async function requestRemove(device: Device) {
     const confirmed = await confirm({
       title: `Remove ${device.hostname}?`,
       message:
@@ -76,7 +265,21 @@ export default function DevicesPage() {
     if (confirmed) remove.mutate(device.id);
   }
 
-  const columns: Column<Device>[] = [
+  return { remove, requestRemove };
+}
+
+/* ---------- Inventory columns ---------- */
+
+function buildDeviceColumns({
+  removing,
+  onExemptions,
+  onRemove,
+}: {
+  removing: boolean;
+  onExemptions: (device: Device) => void;
+  onRemove: (device: Device) => void;
+}): Column<Device>[] {
+  return [
     {
       id: 'hostname',
       header: 'Device',
@@ -112,28 +315,13 @@ export default function DevicesPage() {
       header: 'Latest score',
       align: 'right',
       width: '11%',
-      cell: (row) =>
-        row.latest?.security_score === null || row.latest?.security_score === undefined ? (
-          <span className="muted" title="This device has no completed assessment yet.">
-            not assessed
-          </span>
-        ) : (
-          `${formatScore(row.latest.security_score)}/100`
-        ),
+      cell: scoreCell,
     },
     {
       id: 'risk',
       header: 'Risk',
       width: '13%',
-      cell: (row) =>
-        row.latest ? (
-          <span className="cell-stack">
-            <RiskLevelBadge level={row.latest.risk_level} score={row.latest.risk_score} />
-            <span className="cell-subtle">risk score {formatScore(row.latest.risk_score)}</span>
-          </span>
-        ) : (
-          <span className="muted">—</span>
-        ),
+      cell: riskCell,
     },
     {
       id: 'coverage',
@@ -148,12 +336,7 @@ export default function DevicesPage() {
       header: 'Evidence',
       hideBelow: 'lg',
       width: '11%',
-      cell: (row) =>
-        row.latest ? (
-          <EvidenceQualityBadge quality={row.latest.evidence_quality} />
-        ) : (
-          <span className="muted">—</span>
-        ),
+      cell: evidenceCell,
     },
     {
       id: 'lastScan',
@@ -176,14 +359,14 @@ export default function DevicesPage() {
       width: '13%',
       cell: (row) => (
         <span className="inline-actions">
-          <button type="button" className="text-button" onClick={() => setExemptionsFor(row)}>
+          <button type="button" className="text-button" onClick={() => onExemptions(row)}>
             Exemptions
           </button>
           <button
             type="button"
             className="text-button danger-text"
-            onClick={() => void onRemove(row)}
-            disabled={remove.isPending}
+            onClick={() => onRemove(row)}
+            disabled={removing}
           >
             Remove
           </button>
@@ -191,90 +374,9 @@ export default function DevicesPage() {
       ),
     },
   ];
-
-  return (
-    <div className="page">
-      <div className="page-intro">
-        <div>
-          <span className="eyebrow">Endpoint inventory</span>
-          <h2>Devices</h2>
-          <p>
-            Registered endpoints with their most recent assessed posture. Criticality is an input to
-            the risk calculation, not to the control verdicts.
-          </p>
-        </div>
-        <div className="inline-actions">
-          <button type="button" className="button button-light" onClick={devices.reload}>
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="button button-primary"
-            onClick={() => setShowRegister(true)}
-          >
-            Register device
-          </button>
-        </div>
-      </div>
-
-      <Notice tone="info" title="How criticality is used">
-        {CRITICALITY_EXPLANATION}
-      </Notice>
-
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>Registered devices</h2>
-            <p>
-              {devices.count} loaded{devices.hasMore ? ' · more available' : ''}
-            </p>
-          </div>
-        </div>
-
-        {devices.isError ? (
-          <ErrorState error={devices.error} onRetry={devices.reload} scope="Device inventory" />
-        ) : (
-          <>
-            <DataTable
-              columns={columns}
-              rows={devices.items}
-              rowKey={(row) => row.id}
-              caption="Registered devices"
-              busy={devices.isLoading}
-              busyLabel="Loading devices…"
-              empty={
-                <EmptyState
-                  title="No devices registered"
-                  description="A device is registered automatically by its first scan, or manually with POST /devices/register."
-                  action={
-                    <button
-                      type="button"
-                      className="button button-primary"
-                      onClick={() => setShowRegister(true)}
-                    >
-                      Register device
-                    </button>
-                  }
-                />
-              }
-            />
-            <LoadMore
-              hasMore={devices.hasMore}
-              isLoading={devices.isLoadingMore}
-              onLoadMore={devices.loadMore}
-              loadedCount={devices.count}
-              pageSize={DEFAULT_PAGE_SIZE}
-              unit="devices"
-            />
-          </>
-        )}
-      </section>
-
-      <RegisterDeviceDrawer open={showRegister} onClose={() => setShowRegister(false)} />
-      <DeviceExemptionsDrawer device={exemptionsFor} onClose={() => setExemptionsFor(null)} />
-    </div>
-  );
 }
+
+/* ---------- Criticality ---------- */
 
 /** Inline `PUT /devices/{id}` editor for the 1..5 criticality scale. */
 function CriticalityEditor({ device }: { device: Device }) {
@@ -301,13 +403,15 @@ function CriticalityEditor({ device }: { device: Device }) {
     },
   });
 
+  const inputId = `criticality-${device.id}`;
+
   return (
     <span className="criticality-editor">
-      <label className="visually-hidden" htmlFor={`criticality-${device.id}`}>
+      <label className="visually-hidden" htmlFor={inputId}>
         Criticality for {device.hostname}
       </label>
       <select
-        id={`criticality-${device.id}`}
+        id={inputId}
         value={String(device.criticality)}
         disabled={update.isPending}
         title={CRITICALITY_EXPLANATION}
@@ -315,7 +419,7 @@ function CriticalityEditor({ device }: { device: Device }) {
       >
         {CRITICALITY_CHOICES.map((option) => (
           <option key={option.value} value={option.value}>
-            {option.value} · {option.label}
+            {criticalityOptionLabel(option)}
           </option>
         ))}
       </select>
@@ -326,23 +430,32 @@ function CriticalityEditor({ device }: { device: Device }) {
   );
 }
 
+/* ---------- Register drawer ---------- */
+
+const EMPTY_REGISTER_DRAFT: RegisterDraft = {
+  hostname: '',
+  osType: DEFAULT_OS_TYPE,
+  osVersion: '',
+  osBuild: '',
+  criticality: DEFAULT_CRITICALITY,
+};
+
 function RegisterDeviceDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [hostname, setHostname] = useState('');
-  const [osType, setOsType] = useState('windows');
-  const [osVersion, setOsVersion] = useState('');
-  const [osBuild, setOsBuild] = useState('');
-  const [criticality, setCriticality] = useState('3');
+  const [draft, setDraft] = useState<RegisterDraft>(EMPTY_REGISTER_DRAFT);
+
+  const set = <K extends keyof RegisterDraft>(key: K) => (value: RegisterDraft[K]) =>
+    setDraft((current) => ({ ...current, [key]: value }));
 
   const register = useMutation({
     mutationFn: () =>
       registerDevice({
-        hostname: hostname.trim(),
-        os_type: osType.trim() || undefined,
-        os_version: osVersion.trim() || undefined,
-        os_build: osBuild.trim() || undefined,
-        criticality: Number(criticality),
+        hostname: draft.hostname.trim(),
+        os_type: draft.osType.trim() || undefined,
+        os_version: draft.osVersion.trim() || undefined,
+        os_build: draft.osBuild.trim() || undefined,
+        criticality: Number(draft.criticality),
       }),
     onSuccess: (device) => {
       toast.push({
@@ -351,9 +464,8 @@ function RegisterDeviceDrawer({ open, onClose }: { open: boolean; onClose: () =>
         message: 'Registering upserts by hostname: an existing host is updated, not duplicated.',
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.devices.all });
-      setHostname('');
-      setOsVersion('');
-      setOsBuild('');
+      // Matches the previous behaviour: hostname and OS details clear, OS type and criticality persist.
+      setDraft((current) => ({ ...current, hostname: '', osVersion: '', osBuild: '' }));
       onClose();
     },
     onError: (error) => {
@@ -364,6 +476,8 @@ function RegisterDeviceDrawer({ open, onClose }: { open: boolean; onClose: () =>
       });
     },
   });
+
+  const canSubmit = !register.isPending && draft.hostname.trim().length > 0;
 
   return (
     <Drawer
@@ -380,7 +494,7 @@ function RegisterDeviceDrawer({ open, onClose }: { open: boolean; onClose: () =>
             type="button"
             className="button button-primary"
             onClick={() => register.mutate()}
-            disabled={register.isPending || hostname.trim().length === 0}
+            disabled={!canSubmit}
           >
             {register.isPending ? 'Registering…' : 'Register device'}
           </button>
@@ -388,44 +502,16 @@ function RegisterDeviceDrawer({ open, onClose }: { open: boolean; onClose: () =>
       }
     >
       <div className="form-grid">
-        <label className="field">
-          <span className="field-label">Hostname</span>
-          <input
-            type="text"
-            value={hostname}
-            onChange={(event) => setHostname(event.target.value)}
-            placeholder="WIN-DEV-01"
-            required
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">OS type</span>
-          <input type="text" value={osType} onChange={(event) => setOsType(event.target.value)} />
-        </label>
-        <label className="field">
-          <span className="field-label">OS version</span>
-          <input
-            type="text"
-            value={osVersion}
-            onChange={(event) => setOsVersion(event.target.value)}
-            placeholder="Windows 11 Pro"
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">OS build</span>
-          <input
-            type="text"
-            value={osBuild}
-            onChange={(event) => setOsBuild(event.target.value)}
-            placeholder="26100.1742"
-          />
-        </label>
+        <TextField label="Hostname" value={draft.hostname} onChange={set('hostname')} placeholder="WIN-DEV-01" required />
+        <TextField label="OS type" value={draft.osType} onChange={set('osType')} />
+        <TextField label="OS version" value={draft.osVersion} onChange={set('osVersion')} placeholder="Windows 11 Pro" />
+        <TextField label="OS build" value={draft.osBuild} onChange={set('osBuild')} placeholder="26100.1742" />
         <label className="field">
           <span className="field-label">Criticality</span>
-          <select value={criticality} onChange={(event) => setCriticality(event.target.value)}>
+          <select value={draft.criticality} onChange={(event) => set('criticality')(event.target.value)}>
             {CRITICALITY_CHOICES.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.value} · {option.label}
+                {criticalityOptionLabel(option)}
               </option>
             ))}
           </select>
@@ -436,32 +522,124 @@ function RegisterDeviceDrawer({ open, onClose }: { open: boolean; onClose: () =>
   );
 }
 
-function DeviceExemptionsDrawer({ device, onClose }: { device: Device | null; onClose: () => void }) {
-  const toast = useToast();
-  const confirm = useConfirm();
-  const queryClient = useQueryClient();
-  const { isAdmin } = useSession();
-  const [controlId, setControlId] = useState('');
-  const [reason, setReason] = useState('');
-  const [expiresAt, setExpiresAt] = useState('');
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  required,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  return (
+    <label className="field">
+      <span className="field-label">{label}</span>
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        required={required}
+      />
+    </label>
+  );
+}
 
-  const exemptions = useQuery({
+/* ---------- Exemptions drawer ---------- */
+
+function DeviceExemptionsDrawer({
+  device,
+  onClose,
+}: {
+  device: Device | null;
+  onClose: () => void;
+}) {
+  const { isAdmin } = useSession();
+  const exemptions = useDeviceExemptions(device);
+  const [draft, setDraft] = useState<ExemptionDraft>(EMPTY_EXEMPTION);
+
+  // Never carry an unfinished exemption from one device to another.
+  // Closing the drawer also clears the draft because `device` becomes null.
+  useEffect(() => {
+    setDraft(EMPTY_EXEMPTION);
+  }, [device?.id]);
+
+  const { create, remove, requestRemove } = useExemptionMutations(device, () =>
+    setDraft(EMPTY_EXEMPTION),
+  );
+
+  const expiresAtMs = draft.expiresAt ? new Date(draft.expiresAt).getTime() : null;
+  const invalidExpiry =
+    expiresAtMs !== null && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now());
+  const canRecord =
+    draft.controlId.trim() !== '' &&
+    draft.reason.trim() !== '' &&
+    !invalidExpiry;
+
+  return (
+    <Drawer
+      open={device !== null}
+      onClose={onClose}
+      width="wide"
+      title={device ? `Exemptions · ${device.hostname}` : 'Exemptions'}
+      subtitle="Exempted controls report not_applicable and are excluded from scoring, with the reason kept on record."
+    >
+      <div className="drawer-sections">
+        {isAdmin ? (
+          <ExemptionForm
+            draft={draft}
+            onChange={setDraft}
+            onSubmit={() => create.mutate(draft)}
+            busy={create.isPending}
+            disabled={!canRecord}
+            invalidExpiry={invalidExpiry}
+          />
+        ) : (
+          <Notice tone="info" title="Read-only">
+            Recording or removing exemptions is an administrator action. You can still review the
+            exemptions recorded for this device.
+          </Notice>
+        )}
+
+        <ExemptionList
+          query={exemptions}
+          isAdmin={isAdmin}
+          removing={remove.isPending}
+          onRemove={requestRemove}
+        />
+      </div>
+    </Drawer>
+  );
+}
+
+function useDeviceExemptions(device: Device | null) {
+  return useQuery({
     queryKey: queryKeys.devices.exemptions(device?.id ?? 'none'),
     enabled: device !== null,
-    staleTime: 30_000,
+    staleTime: EXEMPTIONS_STALE_MS,
     queryFn: ({ signal }) => {
       if (!device) throw new Error('No device selected.');
       return listDeviceExemptions(device.id, signal);
     },
   });
+}
+
+function useExemptionMutations(device: Device | null, onRecorded: () => void) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const queryClient = useQueryClient();
 
   const create = useMutation({
-    mutationFn: () => {
+    mutationFn: (draft: ExemptionDraft) => {
       if (!device) throw new Error('No device selected.');
       return createDeviceExemption(device.id, {
-        control_id: controlId.trim(),
-        reason: reason.trim(),
-        expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined,
+        control_id: draft.controlId.trim(),
+        reason: draft.reason.trim(),
+        expires_at: draft.expiresAt ? new Date(draft.expiresAt).toISOString() : undefined,
       });
     },
     onSuccess: () => {
@@ -470,9 +648,12 @@ function DeviceExemptionsDrawer({ device, onClose }: { device: Device | null; on
         title: 'Exemption recorded',
         message: 'The control now reports not_applicable on this device, with the reason attached.',
       });
-      setControlId('');
-      setReason('');
-      setExpiresAt('');
+      onRecorded();
+      if (device) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.devices.exemptions(device.id),
+        });
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.devices.all });
     },
     onError: (error) => {
@@ -491,6 +672,11 @@ function DeviceExemptionsDrawer({ device, onClose }: { device: Device | null; on
     },
     onSuccess: () => {
       toast.push({ tone: 'success', title: 'Exemption removed' });
+      if (device) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.devices.exemptions(device.id),
+        });
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.devices.all });
     },
     onError: (error) => {
@@ -502,7 +688,7 @@ function DeviceExemptionsDrawer({ device, onClose }: { device: Device | null; on
     },
   });
 
-  async function onRemove(exemption: Exemption) {
+  async function requestRemove(exemption: Exemption) {
     const confirmed = await confirm({
       title: 'Remove this exemption?',
       message: (
@@ -516,130 +702,167 @@ function DeviceExemptionsDrawer({ device, onClose }: { device: Device | null; on
     if (confirmed) remove.mutate(exemption.control_id);
   }
 
-  return (
-    <Drawer
-      open={device !== null}
-      onClose={onClose}
-      width="wide"
-      title={device ? `Exemptions · ${device.hostname}` : 'Exemptions'}
-      subtitle="Exempted controls report not_applicable and are excluded from scoring, with the reason kept on record."
-    >
-      <div className="drawer-sections">
-        {isAdmin ? (
-          <section className="drawer-section">
-            <h3 className="drawer-section-title">Record an exemption</h3>
-            <div className="form-grid">
-              <label className="field">
-                <span className="field-label">Control ID</span>
-                <input
-                  type="text"
-                  value={controlId}
-                  onChange={(event) => setControlId(event.target.value)}
-                  placeholder="e.g. WIN-FW-001"
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">Expires at (optional)</span>
-                <input
-                  type="datetime-local"
-                  value={expiresAt}
-                  onChange={(event) => setExpiresAt(event.target.value)}
-                />
-              </label>
-              <label className="field span-2">
-                <span className="field-label">Reason</span>
-                <textarea
-                  value={reason}
-                  onChange={(event) => setReason(event.target.value)}
-                  rows={3}
-                  placeholder="Why does this control not apply to this device?"
-                />
-              </label>
-            </div>
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={() => create.mutate()}
-              disabled={create.isPending || controlId.trim() === '' || reason.trim() === ''}
-            >
-              {create.isPending ? 'Recording…' : 'Record exemption'}
-            </button>
-          </section>
-        ) : (
-          <Notice tone="info" title="Read-only">
-            Recording or removing exemptions is an administrator action. You can still review the
-            exemptions recorded for this device.
-          </Notice>
-        )}
+  return { create, remove, requestRemove };
+}
 
-        <section className="drawer-section">
-          <h3 className="drawer-section-title">Current exemptions</h3>
-          {exemptions.isLoading ? <EmptyState title="Loading exemptions…" compact /> : null}
-          {exemptions.isError ? (
-            <ErrorState
-              error={exemptions.error}
-              onRetry={() => void exemptions.refetch()}
-              scope="Exemptions"
-              compact
-            />
+function ExemptionForm({
+  draft,
+  onChange,
+  onSubmit,
+  busy,
+  disabled,
+  invalidExpiry,
+}: {
+  draft: ExemptionDraft;
+  onChange: (next: ExemptionDraft) => void;
+  onSubmit: () => void;
+  busy: boolean;
+  disabled: boolean;
+  invalidExpiry: boolean;
+}) {
+  const set = (key: keyof ExemptionDraft) => (value: string) => onChange({ ...draft, [key]: value });
+
+  return (
+    <section className="drawer-section">
+      <h3 className="drawer-section-title">Record an exemption</h3>
+      <div className="form-grid">
+        <label className="field">
+          <span className="field-label">Control ID</span>
+          <input
+            type="text"
+            value={draft.controlId}
+            onChange={(event) => set('controlId')(event.target.value)}
+            placeholder="e.g. WIN-FW-001"
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">Expires at (optional)</span>
+          <input
+            type="datetime-local"
+            value={draft.expiresAt}
+            min={toLocalDateTimeInputValue(new Date())}
+            onChange={(event) => set('expiresAt')(event.target.value)}
+            aria-invalid={invalidExpiry}
+          />
+          {invalidExpiry ? (
+            <span className="field-hint" role="alert">
+              Expiration must be a valid date and time in the future.
+            </span>
           ) : null}
-          {exemptions.data && exemptions.data.length === 0 ? (
-            <EmptyState
-              title="No exemptions recorded"
-              description="Every control in the baseline is evaluated normally on this device."
-              compact
-            />
-          ) : null}
-          {exemptions.data && exemptions.data.length > 0 ? (
-            <DataTable
-              columns={[
-                {
-                  id: 'control',
-                  header: 'Control',
-                  cell: (row) => <code className="cell-code">{row.control_id}</code>,
-                },
-                {
-                  id: 'reason',
-                  header: 'Reason',
-                  cell: (row) => row.reason ?? <span className="muted">—</span>,
-                },
-                {
-                  id: 'expires',
-                  header: 'Expires',
-                  width: '18%',
-                  cell: (row) =>
-                    row.expires_at ? (
-                      formatDateTime(row.expires_at)
-                    ) : (
-                      <NeutralBadge label="No expiry" title="This exemption does not expire." />
-                    ),
-                },
-                {
-                  id: 'actions',
-                  header: '',
-                  align: 'right',
-                  width: '12%',
-                  cell: (row) =>
-                    isAdmin ? (
-                      <button
-                        type="button"
-                        className="text-button danger-text"
-                        onClick={() => void onRemove(row)}
-                        disabled={remove.isPending}
-                      >
-                        Remove
-                      </button>
-                    ) : null,
-                },
-              ]}
-              rows={exemptions.data}
-              rowKey={(row) => row.control_id}
-              caption="Per-device control exemptions"
-              empty={<EmptyState title="No exemptions" compact />}
-            />
-          ) : null}
-        </section>
+        </label>
+        <label className="field span-2">
+          <span className="field-label">Reason</span>
+          <textarea
+            value={draft.reason}
+            onChange={(event) => set('reason')(event.target.value)}
+            rows={3}
+            placeholder="Why does this control not apply to this device?"
+          />
+        </label>
       </div>
-    </Drawer>
+      <button type="button" className="button button-primary" onClick={onSubmit} disabled={busy || disabled}>
+        {busy ? 'Recording…' : 'Record exemption'}
+      </button>
+    </section>
+  );
+}
+
+function toLocalDateTimeInputValue(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function exemptionExpiryCell(exemption: Exemption): ReactNode {
+  if (!exemption.expires_at) {
+    return <NeutralBadge label="No expiry" title="This exemption does not expire." />;
+  }
+
+  const expiresAt = new Date(exemption.expires_at);
+  if (!Number.isFinite(expiresAt.getTime())) {
+    return <span className="muted">Invalid expiry date</span>;
+  }
+
+  const expired = expiresAt.getTime() <= Date.now();
+
+  return (
+    <span className="cell-stack">
+      <span>{formatDateTime(exemption.expires_at)}</span>
+      <span className="cell-subtle">{expired ? 'Expired' : 'Active'}</span>
+    </span>
+  );
+}
+
+function ExemptionList({
+  query,
+  isAdmin,
+  removing,
+  onRemove,
+}: {
+  query: ReturnType<typeof useDeviceExemptions>;
+  isAdmin: boolean;
+  removing: boolean;
+  onRemove: (exemption: Exemption) => void;
+}) {
+  const columns: Column<Exemption>[] = [
+    {
+      id: 'control',
+      header: 'Control',
+      cell: (row) => <code className="cell-code">{row.control_id}</code>,
+    },
+    {
+      id: 'reason',
+      header: 'Reason',
+      cell: (row) => row.reason ?? <span className="muted">—</span>,
+    },
+    {
+      id: 'expires',
+      header: 'Expires',
+      width: '18%',
+      cell: exemptionExpiryCell,
+    },
+    {
+      id: 'actions',
+      header: '',
+      align: 'right',
+      width: '12%',
+      cell: (row) =>
+        isAdmin ? (
+          <button
+            type="button"
+            className="text-button danger-text"
+            onClick={() => onRemove(row)}
+            disabled={removing}
+          >
+            Remove
+          </button>
+        ) : null,
+    },
+  ];
+
+  return (
+    <section className="drawer-section">
+      <h3 className="drawer-section-title">Current exemptions</h3>
+
+      {query.isLoading ? <EmptyState title="Loading exemptions…" compact /> : null}
+      {query.isError ? (
+        <ErrorState error={query.error} onRetry={() => void query.refetch()} scope="Exemptions" compact />
+      ) : null}
+      {query.data && query.data.length === 0 ? (
+        <EmptyState
+          title="No exemptions recorded"
+          description="Every control in the baseline is evaluated normally on this device."
+          compact
+        />
+      ) : null}
+      {query.data && query.data.length > 0 ? (
+        <DataTable
+          columns={columns}
+          rows={query.data}
+          rowKey={(row) => row.control_id}
+          caption="Per-device control exemptions"
+          empty={<EmptyState title="No exemptions" compact />}
+        />
+      ) : null}
+    </section>
   );
 }

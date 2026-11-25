@@ -2,11 +2,11 @@
 
 Two layers of "policy" are exposed:
 
-* ``GET /baseline`` — the shipped, versioned control baseline with its standard
-  references (read-only for everyone).
-* ``/policies`` — global overrides an administrator can make: change a weight or
-  severity, disable a control, replace its remediation text. ``/policies/effective``
-  shows the resolved result and which layer supplied each value.
+* ``GET /baseline``: the shipped, versioned control baseline with its standard
+  references (read-only for every authenticated user).
+* ``/policies``: global overrides an administrator can make. An override can change
+  a weight or severity, disable a control, or replace its remediation text.
+  ``/policies/effective`` shows the resolved result.
 
 Static paths are registered before ``/policies/{policy_id}`` on purpose: a literal
 segment must never be parsed as a UUID.
@@ -14,17 +14,20 @@ segment must never be parsed as a UUID.
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import audit
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_admin
 from app.core.pagination import Page, apply_keyset
-from app.db.models import DeviceExemption, Policy, User
+from app.db.models import Device, DeviceExemption, Policy, User
 from app.schemas import (
     BaselineOut,
     EffectiveControlOut,
@@ -40,12 +43,42 @@ from app.services.baseline import load_baseline, resolve_effective
 
 router = APIRouter(tags=["baseline"])
 
+# Columns that the database declares NOT NULL. Clearing one of these through PUT
+# would otherwise surface as an IntegrityError and a 500. Keep in step with the
+# Policy model.
+REQUIRED_ON_UPDATE = frozenset({"name", "category", "weight", "severity", "is_enabled"})
+
+# Fields that identify an override. They are fixed at creation and never updated.
+IMMUTABLE_FIELDS = frozenset({"control_id", "created_by", "id"})
+
+
+class ExemptionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    device_id: UUID
+    control_id: str
+    reason: str | None = None
+    expires_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------- helpers
+def _policy_or_404(db: Session, policy_id: UUID) -> Policy:
+    policy = db.get(Policy, policy_id)
+    if policy is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy override not found")
+    return policy
+
+
+def _known_control_ids() -> set[str]:
+    return {control.control_id for control in load_baseline().controls}
+
 
 # --------------------------------------------------------------------------- baseline
 @router.get("/baseline", response_model=BaselineOut)
 def get_baseline(current_user: User = Depends(get_current_user)) -> BaselineOut:
-    baseline = load_baseline()
-    return BaselineOut(**baseline.as_dict())
+    return BaselineOut(**load_baseline().as_dict())
 
 
 # --------------------------------------------------------------------------- policies
@@ -73,8 +106,14 @@ def list_policies(
 
 @router.get("/policies/effective", response_model=EffectivePolicyOut)
 def effective_policies(
-    current_user: User = Depends(require_admin), db: Session = Depends(get_db)
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
 ) -> EffectivePolicyOut:
+    """Resolved control set after applying every enabled override to the baseline.
+
+    Exemptions are per device, so they are not applied here. This view is the
+    global policy; per-device results come from ``/scans/{id}/results``.
+    """
     baseline = load_baseline()
     overrides = list(db.execute(select(Policy)).scalars())
     effective = resolve_effective(baseline, overrides, [])
@@ -93,17 +132,12 @@ def create_policy(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> PolicyOut:
-    baseline_ids = {c.control_id for c in load_baseline().controls}
-    if payload.control_id not in baseline_ids:
+    if payload.control_id not in _known_control_ids():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown control id {payload.control_id!r}. See GET /baseline for the control list.",
         )
-    if db.query(Policy).filter(Policy.control_id == payload.control_id).one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An override already exists for this control. Update it instead.",
-        )
+
     policy = Policy(
         control_id=payload.control_id,
         name=payload.name,
@@ -117,8 +151,18 @@ def create_policy(
         created_by=current_user.id,
     )
     db.add(policy)
-    db.commit()
+    try:
+        # The unique constraint on control_id is the real guard. A pre-check alone
+        # would let two admins create duplicates at the same moment.
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An override already exists for this control. Update it instead.",
+        ) from None
     db.refresh(policy)
+
     audit.record(
         db,
         "policy.create",
@@ -138,12 +182,11 @@ def create_policy(
 
 @router.get("/policies/{policy_id}", response_model=PolicyOut)
 def get_policy(
-    policy_id: UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    policy_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> PolicyOut:
-    policy = db.get(Policy, policy_id)
-    if policy is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy override not found")
-    return PolicyOut.model_validate(policy)
+    return PolicyOut.model_validate(_policy_or_404(db, policy_id))
 
 
 @router.put("/policies/{policy_id}", response_model=PolicyOut)
@@ -154,14 +197,27 @@ def update_policy(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> PolicyOut:
-    policy = db.get(Policy, policy_id)
-    if policy is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy override not found")
-    updates = payload.model_dump(exclude_unset=True)
+    policy = _policy_or_404(db, policy_id)
+
+    updates = {
+        field: value
+        for field, value in payload.model_dump(exclude_unset=True).items()
+        if field not in IMMUTABLE_FIELDS
+    }
+    cleared = sorted(field for field in REQUIRED_ON_UPDATE if field in updates and updates[field] is None)
+    if cleared:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"These fields cannot be cleared: {', '.join(cleared)}.",
+        )
+    if not updates:
+        return PolicyOut.model_validate(policy)
+
     for field, value in updates.items():
         setattr(policy, field, value)
     db.commit()
     db.refresh(policy)
+
     audit.record(
         db,
         "policy.update",
@@ -169,7 +225,7 @@ def update_policy(
         entity_type="policy",
         entity_id=policy.id,
         request=request,
-        details={"fields": sorted(updates)},
+        details={"control_id": policy.control_id, "fields": sorted(updates)},
     )
     return PolicyOut.model_validate(policy)
 
@@ -181,12 +237,12 @@ def toggle_policy(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> PolicyOut:
-    policy = db.get(Policy, policy_id)
-    if policy is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy override not found")
+    """Flip ``is_enabled``. Prefer PUT with an explicit value when clients may race."""
+    policy = _policy_or_404(db, policy_id)
     policy.is_enabled = not policy.is_enabled
     db.commit()
     db.refresh(policy)
+
     audit.record(
         db,
         "policy.toggle",
@@ -206,12 +262,11 @@ def delete_policy(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> Response:
-    policy = db.get(Policy, policy_id)
-    if policy is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy override not found")
+    policy = _policy_or_404(db, policy_id)
     control_id = policy.control_id
     db.delete(policy)
     db.commit()
+
     audit.record(
         db,
         "policy.delete",
@@ -224,20 +279,36 @@ def delete_policy(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# --------------------------------------------------------------------------- exemptions overview
-@router.get("/exemptions", response_model=list[dict])
-def list_all_exemptions(
-    current_user: User = Depends(require_admin), db: Session = Depends(get_db)
-) -> list[dict]:
-    rows = db.execute(select(DeviceExemption)).scalars()
-    return [
-        {
-            "id": str(row.id),
-            "device_id": str(row.device_id),
-            "control_id": row.control_id,
-            "reason": row.reason,
-            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-        }
-        for row in rows
-    ]
+# --------------------------------------------------------------------------- exemptions
+@router.get("/exemptions", response_model=PageSchema[ExemptionOut])
+def list_exemptions(
+    limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PageSchema[ExemptionOut]:
+    """Exemptions on the caller's own devices, paginated.
+
+    Scoped to the owner, matching every other per-scan and per-device route. The
+    previous admin-wide listing exposed every tenant's exemptions in one unbounded
+    response.
+    """
+    query = (
+        select(DeviceExemption)
+        .join(Device, Device.id == DeviceExemption.device_id)
+        .where(Device.user_id == current_user.id)
+    )
+    page: Page[DeviceExemption] = apply_keyset(
+        db,
+        query,
+        order_column=DeviceExemption.created_at,
+        id_column=DeviceExemption.id,
+        limit=limit,
+        cursor=cursor,
+    )
+    return PageSchema[ExemptionOut](
+        items=[ExemptionOut.model_validate(row) for row in page.items],
+        next_cursor=page.next_cursor,
+        has_more=page.has_more,
+        limit=page.limit,
+    )

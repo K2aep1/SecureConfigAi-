@@ -65,6 +65,10 @@ export default function ScanDetailPage() {
   const [inspected, setInspected] = useState<ControlDetail | null>(null);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
 
+  useEffect(() => {
+    setEvidenceOpen(false);
+  }, [id]);
+
   const detail = useQuery({
     queryKey: queryKeys.scans.detail(id),
     enabled: Boolean(id),
@@ -74,7 +78,12 @@ export default function ScanDetailPage() {
 
   const scan = detail.data;
   const trackedHere = tracked?.scanId === id;
-  const startedAtMs = scan?.started_at ? new Date(scan.started_at).getTime() : Date.now();
+  // Keep the fallback stable for queued scans that do not have started_at yet.
+  const [fallbackStartedAtMs] = useState(() => Date.now());
+  const hasStartedAt = Boolean(scan?.started_at);
+  const startedAtMs = hasStartedAt
+    ? new Date(scan!.started_at!).getTime()
+    : fallbackStartedAtMs;
   const looksActive = scan?.status === 'queued' || scan?.status === 'running';
 
   // Only poll locally when the tracker is not already polling this exact scan.
@@ -99,9 +108,10 @@ export default function ScanDetailPage() {
 
   // When a locally-polled scan reaches a terminal status, refresh the summary.
   const polledStatus = poll.data?.status;
+  const { refetch: refetchDetail } = detail;
   useEffect(() => {
-    if (polledStatus && isTerminalScanStatus(polledStatus)) void detail.refetch();
-  }, [polledStatus, detail]);
+    if (polledStatus && isTerminalScanStatus(polledStatus)) void refetchDetail();
+  }, [polledStatus, refetchDetail]);
 
   const results = useQuery({
     queryKey: queryKeys.scans.results(id),
@@ -111,7 +121,7 @@ export default function ScanDetailPage() {
   });
 
   // Evidence is fetched on demand only.
-  const document = useQuery({
+  const evidence = useQuery({
     queryKey: queryKeys.scans.document(id),
     enabled: evidenceOpen && Boolean(id),
     staleTime: 5 * 60 * 1000,
@@ -174,14 +184,9 @@ export default function ScanDetailPage() {
 
   if (detail.isError) {
     const notFound = isApiError(detail.error) && detail.error.isNotFound;
-    return (
-      <div className="page">
-        <ErrorState
-          error={detail.error}
-          onRetry={() => void detail.refetch()}
-          scope="Scan"
-        />
-        {notFound ? (
+    if (notFound) {
+      return (
+        <div className="page">
           <EmptyState
             title="This scan no longer exists"
             description="It may have been deleted, or the link may be stale."
@@ -191,7 +196,17 @@ export default function ScanDetailPage() {
               </Link>
             }
           />
-        ) : null}
+        </div>
+      );
+    }
+
+    return (
+      <div className="page">
+        <ErrorState
+          error={detail.error}
+          onRetry={() => void refetchDetail()}
+          scope="Scan"
+        />
       </div>
     );
   }
@@ -244,7 +259,7 @@ export default function ScanDetailPage() {
           <div>
             <h2>Status</h2>
             <p>
-              Reported by `GET /scans/{'{id}'}/status`
+              Reported by <code>GET /scans/{'{id}'}/status</code>
               {active ? ' — polled every 1 s, backing off to 3 s after 30 s.' : ' (terminal).'}
             </p>
           </div>
@@ -256,7 +271,7 @@ export default function ScanDetailPage() {
             <ProgressBar value={effectiveProgress} tone="info" label="Scan progress" showValue />
             <p className="scan-live-stage">
               <strong>{effectiveStage || 'Working…'}</strong>
-              {startedAtMs ? (
+              {hasStartedAt ? (
                 <span className="muted"> · elapsed {formatElapsed(now - startedAtMs)}</span>
               ) : null}
             </p>
@@ -265,9 +280,9 @@ export default function ScanDetailPage() {
                 type="button"
                 className="button button-light"
                 onClick={() => void onCancel()}
-                disabled={isCancelling || tracked?.cancelRequested === true}
+                disabled={trackedHere && (isCancelling || tracked?.cancelRequested === true)}
               >
-                {isCancelling ? 'Requesting…' : 'Cancel scan'}
+                {trackedHere && isCancelling ? 'Requesting…' : 'Cancel scan'}
               </button>
             </div>
             <p className="scan-panel-note">
@@ -277,9 +292,15 @@ export default function ScanDetailPage() {
           </div>
         ) : null}
 
-        {effectiveError ? (
+        {effectiveError && effectiveStatus !== 'failed' ? (
           <Notice tone="error" title="Scanner error">
             {effectiveError}
+          </Notice>
+        ) : null}
+
+        {effectiveStatus === 'failed' ? (
+          <Notice tone="error" title="Scan failed">
+            {effectiveError ?? 'The scanner reported a failure. No assessment results or reports were produced.'}
           </Notice>
         ) : null}
 
@@ -321,13 +342,6 @@ export default function ScanDetailPage() {
           />
         </MetricGrid>
       </section>
-
-      {effectiveStatus === 'failed' ? (
-        <EmptyState
-          title="This scan failed"
-          description="A failed scan produces no assessment, no scores and no reports. Read the scanner error above, fix the cause and start a new scan."
-        />
-      ) : null}
 
       {effectiveStatus === 'cancelled' ? (
         <EmptyState
@@ -420,19 +434,19 @@ export default function ScanDetailPage() {
         subtitle={
           <span className="drawer-subtitle-row">
             <code>{id}</code>
-            <span>GET /scans/{'{id}'}/document — requested only because you opened this panel</span>
+            <span><code>GET /scans/{'{id}'}/document</code> — requested only because you opened this panel</span>
           </span>
         }
       >
-        {document.isLoading ? <LoadingState label="Loading stored evidence…" rows={3} /> : null}
-        {document.isError ? (
+        {evidence.isLoading ? <LoadingState label="Loading stored evidence…" rows={3} /> : null}
+        {evidence.isError ? (
           <ErrorState
-            error={document.error}
-            onRetry={() => void document.refetch()}
+            error={evidence.error}
+            onRetry={() => void evidence.refetch()}
             scope="Stored evidence"
           />
         ) : null}
-        {document.data ? (
+        {evidence.data ? (
           <div className="drawer-sections">
             <Notice tone="info" title="Raw stored evidence">
               This is the normalised document the assessment was computed from. It is shown verbatim —
@@ -441,24 +455,24 @@ export default function ScanDetailPage() {
             <section className="drawer-section">
               <h3 className="drawer-section-title">Document metadata</h3>
               <MetricGrid columns={2}>
-                <MetricCard label="Schema version" value={document.data.schema_version ?? '—'} />
-                <MetricCard label="Scan" value={document.data.scan_id} />
+                <MetricCard label="Schema version" value={evidence.data.schema_version ?? '—'} />
+                <MetricCard label="Scan" value={evidence.data.scan_id} />
                 <MetricCard
                   label="Baseline version"
-                  value={document.data.baseline_version ?? '—'}
+                  value={evidence.data.baseline_version ?? '—'}
                 />
                 <MetricCard
                   label="Scoring model"
-                  value={document.data.scoring_model_version ?? '—'}
+                  value={evidence.data.scoring_model_version ?? '—'}
                 />
               </MetricGrid>
             </section>
             <section className="drawer-section">
               <h3 className="drawer-section-title">Normalised data</h3>
-              <JsonFacts data={document.data.normalized_data} emptyLabel="The document contains no normalised data." />
+              <JsonFacts data={evidence.data.normalized_data} emptyLabel="The document contains no normalised data." />
               <details className="drawer-disclosure">
                 <summary>Full JSON document</summary>
-                <pre className="json-block">{formatJsonValue(document.data.normalized_data)}</pre>
+                <pre className="json-block">{formatJsonValue(evidence.data.normalized_data)}</pre>
               </details>
             </section>
           </div>

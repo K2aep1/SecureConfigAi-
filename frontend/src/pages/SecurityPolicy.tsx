@@ -15,12 +15,41 @@ import { DataTable, type Column } from '../components/DataTable';
 import { DetailList, DetailRow, MetricCard, MetricGrid } from '../components/MetricCard';
 import { EmptyState, ErrorState, LoadingState, Notice } from '../components/States';
 import { formatBytes, humanize } from '../lib/format';
+import { isApiError } from '../api';
 import type { RateLimitRule, StartupCheck } from '../types';
 
-function YesNo({ value }: { value: boolean }) {
+const RATE_LIMIT_COLUMNS: Column<RateLimitRule>[] = [
+  { id: 'name', header: 'Rule', cell: (row) => <code className="cell-code">{row.name}</code> },
+  { id: 'limit', header: 'Limit', align: 'right', width: '14%', cell: (row) => row.limit },
+  {
+    id: 'window',
+    header: 'Window',
+    align: 'right',
+    width: '18%',
+    cell: (row) => `${row.window_seconds} s`,
+  },
+  { id: 'scope', header: 'Scope', width: '24%', cell: (row) => humanize(row.scope) },
+];
+
+
+type YesNoTone = 'ok' | 'warn' | 'neutral';
+
+function isApiForbidden(error: unknown): boolean {
+  return isApiError(error) && error.status === 403;
+}
+
+function YesNo({
+  value,
+  trueTone = 'ok',
+  falseTone = 'neutral',
+}: {
+  value: boolean;
+  trueTone?: YesNoTone;
+  falseTone?: YesNoTone;
+}) {
   return (
     <Badge
-      tone={value ? 'ok' : 'warn'}
+      tone={value ? trueTone : falseTone}
       label={value ? 'Yes' : 'No'}
       title={value ? 'Enabled' : 'Not enabled'}
     />
@@ -39,18 +68,7 @@ export default function SecurityPolicyPage() {
   const data = policy.data;
   const failingChecks = (data?.startup_checks ?? []).filter((check) => !check.ok);
 
-  const rateLimitColumns: Column<RateLimitRule>[] = [
-    { id: 'name', header: 'Rule', cell: (row) => <code className="cell-code">{row.name}</code> },
-    { id: 'limit', header: 'Limit', align: 'right', width: '14%', cell: (row) => row.limit },
-    {
-      id: 'window',
-      header: 'Window',
-      align: 'right',
-      width: '18%',
-      cell: (row) => `${row.window_seconds} s`,
-    },
-    { id: 'scope', header: 'Scope', width: '24%', cell: (row) => humanize(row.scope) },
-  ];
+
 
   return (
     <div className="page">
@@ -68,11 +86,17 @@ export default function SecurityPolicyPage() {
       {policy.isLoading ? <LoadingState label="Loading security policy…" rows={4} /> : null}
 
       {policy.isError ? (
-        <ErrorState
-          error={policy.error}
-          onRetry={() => void policy.refetch()}
-          scope="Security policy"
-        />
+        isApiForbidden(policy.error) ? (
+          <Notice tone="warning" title="Administrator access required">
+            Your account does not have permission to view the platform security policy.
+          </Notice>
+        ) : (
+          <ErrorState
+            error={policy.error}
+            onRetry={() => void policy.refetch()}
+            scope="Security policy"
+          />
+        )
       ) : null}
 
       {data ? (
@@ -110,7 +134,7 @@ export default function SecurityPolicyPage() {
                         <strong>{humanize(check.name)}</strong>
                         <Badge
                           tone={check.ok ? 'ok' : check.severity === 'critical' ? 'risk' : 'warn'}
-                          label={check.ok ? 'pass' : `${check.severity} · warn`}
+                          label={check.ok ? 'pass' : check.severity}
                           title={
                             check.ok
                               ? 'This check passed at start-up.'
@@ -128,8 +152,7 @@ export default function SecurityPolicyPage() {
 
           {failingChecks.length > 0 ? (
             <Notice tone="warning" title="Degraded configuration">
-              At least one startup check is failing. Some features (for example AI assistance or token
-              security) may behave differently from the documented defaults until this is resolved.
+              At least one startup check is failing. Review the failing checks above and their messages.
             </Notice>
           ) : null}
 
@@ -177,12 +200,12 @@ export default function SecurityPolicyPage() {
               <MetricCard
                 label="Access token lifetime"
                 value={`${data.tokens.access_token_minutes} min`}
-                note="Kept in memory only by this client"
+                note="Client storage is not specified by this API response"
               />
               <MetricCard
                 label="Refresh token lifetime"
                 value={`${data.tokens.refresh_token_days} days`}
-                note="Stored in localStorage"
+                note="Review client-side storage; localStorage is exposed to scripts running in this origin."
               />
               <MetricCard
                 label="Refresh rotation"
@@ -201,11 +224,11 @@ export default function SecurityPolicyPage() {
             <div className="panel-head">
               <div>
                 <h2>Rate limits</h2>
-                <p>Exceeding a limit returns 429 with a Retry-After header, which the UI surfaces.</p>
+                <p>Configured request limits reported by the backend.</p>
               </div>
             </div>
             <DataTable
-              columns={rateLimitColumns}
+              columns={RATE_LIMIT_COLUMNS}
               rows={data.rate_limits}
               rowKey={(row) => row.name}
               caption="Rate limit rules"
@@ -225,7 +248,7 @@ export default function SecurityPolicyPage() {
                 <DetailRow label="Maximum size" value={formatBytes(data.uploads.max_bytes)} />
                 <DetailRow
                   label="Allowed extensions"
-                  value={data.uploads.allowed_extensions.join(', ') || '—'}
+                  value={data.uploads.allowed_extensions?.join(', ') ?? '—'}
                 />
                 <DetailRow
                   label="Quarantine TTL"
@@ -294,8 +317,7 @@ export default function SecurityPolicyPage() {
               <div>
                 <h2>AI runtime</h2>
                 <p>
-                  How the advisory assistant is executed. These limits explain timeouts and cached
-                  responses on the AI Assistant page.
+                  Runtime settings reported by the backend for the advisory assistant.
                 </p>
               </div>
             </div>

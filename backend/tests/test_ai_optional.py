@@ -196,13 +196,14 @@ def test_ai_input_sanitisation_strips_control_characters_and_redacts_email():
 
 
 def test_ai_cannot_write_to_the_authoritative_assessment(client, user, db):
+    
     """No AI endpoint may alter a stored control, score or finding."""
     from app.db.models import ScanResult
 
     scan = _upload(client, user["headers"], failing_document("AI-WRITE"))
     scan_id = scan["scan_id"]
     before = client.get(f"/api/v1/scans/{scan_id}/results", headers=user["headers"]).json()["results"]
-
+    before_model_version = before["stored_scoring_model_version"]
     client.post(f"/api/v1/ai/report/{scan_id}", headers=user["headers"])
     client.post(
         f"/api/v1/ai/findings/{_finding_id(client, user['headers'], scan_id)}/recommend",
@@ -216,7 +217,7 @@ def test_ai_cannot_write_to_the_authoritative_assessment(client, user, db):
     assert stored.security_score == before["security_score"]
     assert stored.risk_score == before["risk_score"]
     assert stored.compliance_score == before["compliance_score"]
-    assert stored.assessment["scoring_model_version"] == "2.0.0"
+    assert stored.assessment["scoring_model_version"] == before_model_version
 
 
 def test_chat_can_attach_owned_scan_context(client, user, monkeypatch):

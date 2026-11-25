@@ -81,7 +81,16 @@ export function formatBytes(bytes: number | null | undefined): string {
 export function formatScore(score: number | null | undefined): string {
   return score === null || score === undefined || !Number.isFinite(score) ? '—' : String(score);
 }
-
+/**
+ * Formats a security score consistently across tables and reports.
+ * Handles null, undefined, and non-finite values safely.
+ */
+export function formatScoreLabel(
+  score: number | null | undefined,
+): string {
+  const formatted = formatScore(score);
+  return formatted === '—' ? '—' : `${formatted}/100`;
+}
 export function formatPercent(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value) ? '—' : `${value}%`;
 }

@@ -126,15 +126,27 @@ def configured(value: Any) -> bool:
 
 
 def reg_state(observed: Any, name: str) -> dict[str, Any]:
-    """Shape a registry reading as ``{"configured": bool, "value": typed}``.
+    """Return a tri-state registry observation without confusing denied reads
+    with absent values.
 
-    ``observed`` is either ``None`` (key or value absent) or a mapping with an
-    ``exists`` flag and the raw value, as produced by the registry collector's
-    one-shot PowerShell program.
+    ``readable=True, exists=False`` means the value was successfully checked
+    and is not configured. ``readable=False`` means the query failed; in that
+    case ``configured`` is ``None`` and the evidence must remain unknown.
+    Legacy ``exists``-only observations remain supported.
     """
-    if isinstance(observed, dict) and observed.get("exists") is True:
-        return {"configured": True, "value": observed.get("value")}
-    return {"configured": False, "value": None}
+    if not isinstance(observed, dict):
+        return {"readable": False, "configured": None, "value": None,
+                "error": "registry observation missing"}
+    readable = observed.get("readable")
+    if readable is None:
+        # Backward compatibility: old scripts only emitted exists.
+        readable = isinstance(observed.get("exists"), bool)
+    if readable is not True:
+        return {"readable": False, "configured": None, "value": None,
+                "error": as_str(observed.get("error")) or "registry value could not be read"}
+    exists = observed.get("exists") is True
+    return {"readable": True, "configured": exists,
+            "value": observed.get("value") if exists else None, "error": None}
 
 
 def one_or_many(value: Any) -> list[Any]:
@@ -174,9 +186,12 @@ def carry_status(
     section 2 rule 6 requires that pair to survive whenever a collector cannot
     vouch for its evidence.
     """
-    status = str(raw.get("status") or "completed").lower()
-    if status == "completed" or status not in PAYLOAD_STATUSES:
+    status = str(raw.get("status") or "completed").strip().lower()
+    if status == "completed":
         return payload
+    if status not in PAYLOAD_STATUSES:
+        status = "error"
     payload["status"] = status
-    payload["error"] = as_str(raw.get("error")) or as_str(raw.get("probe_error")) or default_reason
+    payload["error"] = (as_str(raw.get("error")) or
+                        as_str(raw.get("probe_error")) or default_reason)
     return payload

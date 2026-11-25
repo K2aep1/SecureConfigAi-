@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import sys
-from typing import Any, Final
+from typing import Any, Final, Mapping
 
 __all__ = [
     "PowerShellError",
@@ -106,6 +107,7 @@ def run_script(
     *,
     timeout: float,
     depth: int = DEFAULT_DEPTH,
+    env: Mapping[str, str] | None = None,
 ) -> Any:
     """Execute one PowerShell JSON program and return the parsed document.
 
@@ -130,6 +132,10 @@ def run_script(
     ]
 
     hard_timeout = timeout + min(KILL_GRACE_SECONDS, timeout * KILL_GRACE_FRACTION)
+    child_env = os.environ.copy()
+    if env is not None:
+        child_env.update({str(key): str(value) for key, value in env.items()})
+
     process: subprocess.Popen[str] = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
@@ -138,6 +144,7 @@ def run_script(
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=child_env,
     )
     try:
         stdout, stderr = process.communicate(timeout=hard_timeout)

@@ -10,7 +10,11 @@ Shaping rules applied consistently here:
 * an unreadable sub-block keeps its own ``status`` and reports ``None`` for
   every value rather than ``False``/``0``;
 * derived booleans are computed with :func:`scanner.values.coerce_bool` and are
-  ``None`` whenever the underlying evidence was absent.
+  ``None`` whenever the underlying evidence was absent;
+* a missing top-level or sub-block status defaults to ``completed``; explicit
+  non-completed top-level status is retained as an ``error`` in every payload;
+* collector timeouts are per-collector slices and are scaled by the scan
+  orchestrator when it allocates the overall scan budget.
 """
 
 from __future__ import annotations
@@ -63,16 +67,24 @@ class PowerShellCollector(BaseCollector):
             raise CollectorUnavailable(
                 f"{self.category}: PowerShell returned {type(raw).__name__}, not an object"
             )
-        return self.shape(raw)
+
+        # Status handling belongs here, not in shape(): concrete collectors
+        # override shape() and must not be able to discard a failed run.
+        status = str(raw.get("status") or "completed").strip().lower()
+        payload = self.shape(raw)
+        # _collect_one() in ScannerOrchestrator owns final status normalisation.
+        # Preserve the status here; popping it silently converted failed evidence
+        # into a successful collector result.
+        if status != "completed":
+            if status not in {"unavailable", "skipped", "timeout", "error"}:
+                status = "error"
+            payload["status"] = status
+            payload.setdefault("error", as_str(raw.get("error")) or status)
+        return payload
 
     def shape(self, raw: dict[str, Any]) -> dict[str, Any]:
         """Convert the raw PowerShell document into the evidence payload."""
-        payload = dict(raw)
-        status = str(payload.pop("status", "completed") or "completed").lower()
-        error = payload.pop("error", None)
-        if status != "completed":
-            payload.setdefault("error", as_str(error) or status)
-        return payload
+        return {key: value for key, value in raw.items() if key not in {"status", "error"}}
 
 
 class DeviceCollector(PowerShellCollector):
@@ -84,7 +96,7 @@ class DeviceCollector(PowerShellCollector):
     def shape(self, raw: dict[str, Any]) -> dict[str, Any]:
         return {
             "hostname": as_str(raw.get("hostname")),
-            "os": as_str(raw.get("os")) or "windows",
+            "os": as_str(raw.get("os")),
             "name": as_str(raw.get("name")),
             "version": as_str(raw.get("version")),
             "build": as_str(raw.get("build")),
@@ -94,6 +106,8 @@ class DeviceCollector(PowerShellCollector):
             "serial_number": as_str(raw.get("serial_number")),
             "windows_directory": as_str(raw.get("windows_directory")),
             "computer_name": as_str(raw.get("computer_name")),
+            "collection_error": as_str(raw.get("collection_error")),
+            "serial_number_error": as_str(raw.get("serial_number_error")),
         }
 
 
@@ -151,17 +165,42 @@ class FirewallCollector(PowerShellCollector):
             enabled = all(value is True for value in enabled_values)
 
         summary = raw.get("rule_summary")
-        rule_summary = summary if isinstance(summary, dict) else None
+        def shape_summary(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {as_str(key) or str(key): shape_summary(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [shape_summary(item) for item in value[:200]]
+            if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+                return value
+            return as_str(value)
+
+        rule_summary = shape_summary(summary) if isinstance(summary, dict) else None
+
+        global_raw = raw.get("global_settings")
+        global_settings = (
+            {
+                as_str(key) or str(key): coerce_bool(value)
+                for key, value in global_raw.items()
+            }
+            if isinstance(global_raw, dict)
+            else None
+        )
+        collection_raw = raw.get("collection")
+        collection = (
+            {as_str(key) or str(key): as_str(value) for key, value in collection_raw.items()}
+            if isinstance(collection_raw, dict)
+            else None
+        )
 
         payload: dict[str, Any] = {
             "enabled": enabled,
             "profiles": profiles,
             "logging": logging,
             "rule_summary": rule_summary,
-            "global_settings": raw.get("global_settings"),
-            "collection": raw.get("collection"),
+            "global_settings": global_settings,
+            "collection": collection,
         }
-        for key in ("profile_error", "rule_error"):
+        for key in ("profile_error", "rule_error", "settings_error"):
             value = as_str(raw.get(key))
             if value:
                 payload[key] = value
@@ -177,8 +216,8 @@ class SystemHardeningCollector(PowerShellCollector):
     evidence_keys = (
         "bitlocker.enabled",
         "bitlocker.status",
-        "bitlocker.volume.VolumeStatus",
-        "bitlocker.volume.ProtectionStatus",
+        "bitlocker.volume_status",
+        "bitlocker.protection_status",
         "defender.enabled",
         "defender.real_time_protection",
         "defender.tamper_protection",
@@ -201,14 +240,14 @@ class SystemHardeningCollector(PowerShellCollector):
             "uac": self._uac(raw.get("uac")),
             "uac_enabled": coerce_bool(raw.get("uac_enabled")),
             "secure_boot": coerce_bool(raw.get("secure_boot")),
-            "secure_boot_supported": coerce_bool(raw.get("secure_boot_supported")) is True,
+            "secure_boot_supported": coerce_bool(raw.get("secure_boot_supported")),
             "secure_boot_error": as_str(raw.get("secure_boot_error")),
         }
 
     @staticmethod
     def _bitlocker(raw: Any) -> dict[str, Any]:
         data = raw if isinstance(raw, dict) else {}
-        status = str(data.get("status") or "unavailable").lower()
+        status = str(data.get("status") or "completed").lower()
         volume = data.get("volume")
         return {
             "status": status,
@@ -223,8 +262,16 @@ class SystemHardeningCollector(PowerShellCollector):
     @staticmethod
     def _defender(raw: Any) -> dict[str, Any]:
         data = raw if isinstance(raw, dict) else {}
-        status = str(data.get("status") or "unavailable").lower()
-        preferences = data.get("preferences")
+        status = str(data.get("status") or "completed").lower()
+        preferences_raw = data.get("preferences")
+        preferences = (
+            {
+                as_str(key) or str(key): coerce_bool(value)
+                for key, value in preferences_raw.items()
+            }
+            if isinstance(preferences_raw, dict)
+            else None
+        )
         return {
             "status": status,
             "error": as_str(data.get("error")),
@@ -240,13 +287,13 @@ class SystemHardeningCollector(PowerShellCollector):
             "engine_version": as_str(data.get("engine_version")),
             "platform_version": as_str(data.get("platform_version")),
             "last_quick_scan": as_str(data.get("last_quick_scan")),
-            "preferences": preferences if isinstance(preferences, dict) else None,
+            "preferences": preferences,
         }
 
     @staticmethod
     def _uac(raw: Any) -> dict[str, Any]:
         data = raw if isinstance(raw, dict) else {}
-        status = str(data.get("status") or "unavailable").lower()
+        status = str(data.get("status") or "completed").lower()
         return {
             "status": status,
             "error": as_str(data.get("error")),
@@ -305,16 +352,24 @@ class AuthenticationCollector(PowerShellCollector):
 
     def collect(self) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="scai_secedit_") as workdir:
-            inf_path = os.path.join(workdir, "secpol.inf")
-            previous = os.environ.get("SCAI_SECEDIT_PATH")
-            os.environ["SCAI_SECEDIT_PATH"] = inf_path
-            try:
-                return super().collect()
-            finally:
-                if previous is None:
-                    os.environ.pop("SCAI_SECEDIT_PATH", None)
-                else:
-                    os.environ["SCAI_SECEDIT_PATH"] = previous
+            inf_path = str(__import__("pathlib").Path(workdir) / "secpol.inf")
+            raw = run_script(
+                script_for(self.category),
+                timeout=self.timeout_seconds,
+                env={"SCAI_SECEDIT_PATH": inf_path},
+            )
+            if not isinstance(raw, dict):
+                raise CollectorUnavailable(
+                    f"{self.category}: PowerShell returned {type(raw).__name__}, not an object"
+                )
+            status = str(raw.get("status") or "completed").strip().lower()
+            payload = self.shape(raw)
+            if status != "completed":
+                if status not in {"unavailable", "skipped", "timeout", "error"}:
+                    status = "error"
+                payload["status"] = status
+                payload.setdefault("error", as_str(raw.get("error")) or status)
+            return payload
 
     def shape(self, raw: dict[str, Any]) -> dict[str, Any]:
         source = as_str(raw.get("source"))
@@ -405,13 +460,22 @@ class AccountSecurityCollector(PowerShellCollector):
                 {
                     "name": as_str(row.get("Name")),
                     "object_class": as_str(row.get("ObjectClass")),
-                    "principal_source": row.get("PrincipalSource"),
+                    "principal_source": as_str(row.get("PrincipalSource")),
                 }
             )
+        nested_groups = [
+            {"name": as_str(row.get("Name")),
+             "object_class": as_str(row.get("ObjectClass")),
+             "principal_source": as_str(row.get("PrincipalSource"))}
+            for row in one_or_many(raw.get("nested_groups")) if isinstance(row, dict)
+        ]
         diagnostics = raw.get("diagnostics")
         payload: dict[str, Any] = {
             "admin_count": as_int(raw.get("admin_count")),
             "admins": admins,
+            "nested_groups": nested_groups,
+            "excluded_group_members": as_int(raw.get("excluded_group_members")),
+            "admins_complete": coerce_bool(raw.get("admins_complete")),
             "enabled_user_count": as_int(raw.get("enabled_user_count")),
         }
         if isinstance(diagnostics, dict):
@@ -452,7 +516,7 @@ class ServicesCollector(PowerShellCollector):
             )
         return carry_status(
             {
-                "checked_services": [as_str(name) for name in one_or_many(raw.get("checked_services"))],
+                "checked_services": [name for item in one_or_many(raw.get("checked_services")) if (name := as_str(item)) is not None],
                 "services": services,
                 "suspicious": suspicious,
                 "running_count": as_int(raw.get("running_count")),
@@ -527,8 +591,8 @@ class RegistryCollector(PowerShellCollector):
 
         lm_value = as_int(lm_level["value"]) if lm_level["configured"] else None
         lm_ok: bool | None = None
-        if lm_level["configured"]:
-            lm_ok = lm_value is not None and lm_value >= 3
+        if lm_value is not None:
+            lm_ok = lm_value >= 3
 
         payload: dict[str, Any] = {
             "wdigest": wdigest,
@@ -555,12 +619,22 @@ class RegistryCollector(PowerShellCollector):
         errors = as_str(raw.get("execution_policy_error"))
         if errors:
             payload["execution_policy_error"] = errors
-        return payload
+        read_errors = {
+            key: as_str(value.get("error"))
+            for key, value in readings.items()
+            if isinstance(value, dict) and as_str(value.get("error"))
+        }
+        if read_errors:
+            payload["reading_errors"] = read_errors
+        return carry_status(
+            payload, raw,
+            default_reason="registry evidence could not be read",
+        )
 
     @staticmethod
     def _flag(state: dict[str, Any], predicate: Any) -> bool | None:
         """Derive a boolean, or ``None`` when the value was never configured."""
-        if not state.get("configured"):
+        if not state.get("configured") or state.get("value") is None:
             return None
         return bool(predicate(state.get("value")))
 
@@ -616,13 +690,28 @@ class NetworkInventoryCollector(PowerShellCollector):
     timeout_seconds = 35.0
 
     def shape(self, raw: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "adapters": one_or_many(raw.get("adapters")),
-            "ipv4": one_or_many(raw.get("ipv4")),
-            "profiles": one_or_many(raw.get("profiles")),
-            "counts": raw.get("counts") if isinstance(raw.get("counts"), dict) else {},
+        def preserve_row(row: dict[str, Any]) -> dict[str, Any]:
+            # Keep JSON-native bool/int/float values; stringify only date/time and
+            # other provider objects that cannot safely cross the JSON boundary.
+            shaped: dict[str, Any] = {}
+            for key, value in row.items():
+                name = as_str(key) or str(key)
+                if value is None or isinstance(value, (bool, int, float, str)):
+                    shaped[name] = value
+                else:
+                    shaped[name] = as_str(value)
+            return shaped
+
+        payload = {
+            "adapters": [preserve_row(row) for row in one_or_many(raw.get("adapters")) if isinstance(row, dict)],
+            "ipv4": [preserve_row(row) for row in one_or_many(raw.get("ipv4")) if isinstance(row, dict)],
+            "profiles": [preserve_row(row) for row in one_or_many(raw.get("profiles")) if isinstance(row, dict)],
+            "counts": ({as_str(key) or str(key): as_int(value) for key, value in raw["counts"].items()}
+                       if isinstance(raw.get("counts"), dict) else {}),
             "errors": [as_str(item) for item in one_or_many(raw.get("errors")) if as_str(item)],
+            "collection_status": as_str(raw.get("collection_status")) or "complete",
         }
+        return carry_status(payload, raw, default_reason="all network inventory queries failed")
 
 
 class InstalledSoftwareCollector(PowerShellCollector):
@@ -652,12 +741,16 @@ class InstalledSoftwareCollector(PowerShellCollector):
                 }
             )
         count = as_int(raw.get("count"))
-        return {
-            "count": count if count is not None else len(applications),
+        payload = {
+            "count": count,
             "truncated": coerce_bool(raw.get("truncated")) is True,
             "applications": applications[:2000],
             "source": as_str(raw.get("source")),
+            "collection_status": as_str(raw.get("collection_status")) or "complete",
+            "successful_sources": [as_str(x) for x in one_or_many(raw.get("successful_sources")) if as_str(x)],
+            "errors": [as_str(x) for x in one_or_many(raw.get("errors")) if as_str(x)],
         }
+        return carry_status(payload, raw, default_reason="installed software registry could not be read")
 
 
 def build_collectors() -> list[BaseCollector]:

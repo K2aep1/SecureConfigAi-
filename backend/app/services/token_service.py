@@ -1,7 +1,7 @@
 """Server-side refresh-token lifecycle: rotation, reuse detection and revocation.
 
 Refresh tokens are stored as SHA-256 fingerprints. Every issuance belongs to a
-*family* (one sign-in). Rotating a token revokes the old one and links it to its
+family (one sign-in). Rotating a token revokes the old one and links it to its
 replacement, so if an already-rotated token is presented again the whole family is
 revoked — the standard mitigation for a stolen refresh token.
 """
@@ -35,7 +35,12 @@ def issue_pair(
 ) -> dict:
     """Issue an access/refresh pair and record the refresh token."""
     access = security.issue_access_token(user.email, str(user.id), user.role)
-    refresh = security.issue_refresh_token(user.email, str(user.id), family_id=family_id)
+    refresh = security.issue_refresh_token(
+        user.email,
+        str(user.id),
+        family_id=family_id,
+    )
+
     db.add(
         RefreshToken(
             user_id=user.id,
@@ -46,7 +51,9 @@ def issue_pair(
             user_agent=(user_agent or "")[:255] or None,
         )
     )
+
     db.commit()
+
     return {
         "access_token": access.token,
         "refresh_token": refresh.token,
@@ -56,59 +63,107 @@ def issue_pair(
 
 
 def rotate(
-    db: Session, token: str, *, ip_address: str | None = None, user_agent: str | None = None
+    db: Session,
+    token: str,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> tuple[dict, User]:
-    """Rotate a refresh token. Raises :class:`security.TokenError` when it must not be used."""
-    # The decode call is the validation: signature, issuer, audience, expiry and token
-    # type are checked before the stored fingerprint is looked up.
+    """Rotate a refresh token.
+
+    Raises security.TokenError when the token must not be used.
+    """
+
+    # Validate signature, issuer, audience, expiry and token type.
     security.decode_token(token, expected_type="refresh")
+
     fingerprint = security.token_fingerprint(token)
 
     record = db.execute(
-        select(RefreshToken).where(RefreshToken.token_hash == fingerprint)
+        select(RefreshToken).where(
+            RefreshToken.token_hash == fingerprint
+        )
     ).scalar_one_or_none()
+
     if record is None:
         raise security.TokenError("unknown")
 
-    if record.revoked_at is not None and settings.REFRESH_REUSE_DETECTION:
-        # A rotated token being replayed: assume theft and burn the whole family.
-        revoke_family(db, record.family_id, reason="reuse_detected")
-        logger.warning("refresh token reuse detected user_id=%s family=%s", record.user_id, record.family_id)
+    # Reuse detection must distinguish a rotated token from a token
+    # revoked through logout or another administrative operation.
+    if (
+        record.revoked_at is not None
+        and record.replaced_by_hash is not None
+        and settings.REFRESH_REUSE_DETECTION
+    ):
+        revoke_family(
+            db,
+            record.family_id,
+            reason="reuse_detected",
+        )
+
+        logger.warning(
+            "refresh token reuse detected user_id=%s family=%s",
+            record.user_id,
+            record.family_id,
+        )
+
         raise security.TokenError("reuse")
 
     if not record.is_active:
         raise security.TokenError("expired")
 
     user = db.get(User, record.user_id)
+
     if user is None or not user.is_active:
         raise security.TokenError("user_inactive")
 
     if settings.REFRESH_ROTATION:
-        new_refresh = security.issue_refresh_token(user.email, str(user.id), family_id=str(record.family_id))
+        new_refresh = security.issue_refresh_token(
+            user.email,
+            str(user.id),
+            family_id=str(record.family_id),
+        )
+
         new_hash = security.token_fingerprint(new_refresh.token)
         family_id = str(record.family_id)
-        # V4 fix (H-1): the rotation is now an atomic conditional claim. Exactly one
-        # concurrent caller can flip ``revoked_at`` from NULL; a rowcount of 0 means
-        # another request rotated this token first. Concurrent use of the same token
-        # is a theft signal, so the family is burned instead of silently issuing a
-        # second live child (the pre-V4 read-then-write window allowed exactly that).
+
+        # Atomic conditional claim:
+        # Only one concurrent request can rotate this token.
         claimed = db.execute(
             update(RefreshToken)
-            .where(RefreshToken.token_hash == fingerprint, RefreshToken.revoked_at.is_(None))
-            .values(revoked_at=_now(), replaced_by_hash=new_hash)
+            .where(
+                RefreshToken.token_hash == fingerprint,
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(
+                revoked_at=_now(),
+                replaced_by_hash=new_hash,
+            )
         )
+
         db.flush()
+
         if claimed.rowcount == 0:
             db.rollback()
+
             if settings.REFRESH_REUSE_DETECTION:
-                revoke_family(db, family_id, reason="reuse_detected")
+                revoke_family(
+                    db,
+                    family_id,
+                    reason="reuse_detected",
+                )
+
                 logger.warning(
-                    "refresh token concurrent use detected user_id=%s family=%s",
+                    "refresh token concurrent use detected "
+                    "user_id=%s family=%s",
                     record.user_id,
                     family_id,
                 )
+
                 raise security.TokenError("reuse")
+
             raise security.TokenError("expired")
+
         db.add(
             RefreshToken(
                 user_id=user.id,
@@ -119,72 +174,168 @@ def rotate(
                 user_agent=(user_agent or "")[:255] or None,
             )
         )
-        access = security.issue_access_token(user.email, str(user.id), user.role)
+
+        access = security.issue_access_token(
+            user.email,
+            str(user.id),
+            user.role,
+        )
+
         db.commit()
+
         return {
             "access_token": access.token,
             "refresh_token": new_refresh.token,
             "token_type": "bearer",
-            "expires_in": int((access.expires_at - _now()).total_seconds()),
+            "expires_in": int(
+                (access.expires_at - _now()).total_seconds()
+            ),
         }, user
 
-    access = security.issue_access_token(user.email, str(user.id), user.role)
+    # Rotation disabled: retain the existing refresh token.
+    access = security.issue_access_token(
+        user.email,
+        str(user.id),
+        user.role,
+    )
+
     db.commit()
+
     return {
         "access_token": access.token,
         "refresh_token": token,
         "token_type": "bearer",
-        "expires_in": int((access.expires_at - _now()).total_seconds()),
+        "expires_in": int(
+            (access.expires_at - _now()).total_seconds()
+        ),
     }, user
 
 
-def revoke(db: Session, token: str | None) -> bool:
-    """Revoke one refresh token (sign-out). Returns True when a record was updated."""
+def revoke(
+    db: Session,
+    token: str | None,
+    *,
+    user_id=None,
+) -> bool:
+    """Revoke one refresh token.
+
+    When user_id is supplied, the token must belong to that user.
+    Returns True only when an active token was revoked.
+    """
+
     if not token:
         return False
-    record = db.execute(
-        select(RefreshToken).where(RefreshToken.token_hash == security.token_fingerprint(token))
-    ).scalar_one_or_none()
-    if record is None or record.revoked_at is not None:
+
+    query = select(RefreshToken).where(
+        RefreshToken.token_hash == security.token_fingerprint(token),
+        RefreshToken.revoked_at.is_(None),
+    )
+
+    if user_id is not None:
+        query = query.where(
+            RefreshToken.user_id == user_id
+        )
+
+    record = db.execute(query).scalar_one_or_none()
+
+    if record is None:
         return False
+
     record.revoked_at = _now()
+
     db.commit()
+
     return True
 
 
-def revoke_all_for_user(db: Session, user_id, *, reason: str = "sign_out_all") -> int:
+def revoke_all_for_user(
+    db: Session,
+    user_id,
+    *,
+    reason: str = "sign_out_all",
+) -> int:
+    """Revoke all active refresh tokens belonging to one user."""
+
     records = list(
         db.execute(
-            select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+            select(RefreshToken).where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.revoked_at.is_(None),
+            )
         ).scalars()
     )
+
     now = _now()
+
     for record in records:
         record.revoked_at = now
+
     db.commit()
-    logger.info("revoked %d refresh tokens user_id=%s reason=%s", len(records), user_id, reason)
+
+    logger.info(
+        "revoked %d refresh tokens user_id=%s reason=%s",
+        len(records),
+        user_id,
+        reason,
+    )
+
     return len(records)
 
 
-def revoke_family(db: Session, family_id, *, reason: str = "family_revoked") -> int:
+def revoke_family(
+    db: Session,
+    family_id,
+    *,
+    reason: str = "family_revoked",
+) -> int:
+    """Revoke every active refresh token belonging to one token family."""
+
     records = list(
         db.execute(
-            select(RefreshToken).where(RefreshToken.family_id == family_id, RefreshToken.revoked_at.is_(None))
+            select(RefreshToken).where(
+                RefreshToken.family_id == family_id,
+                RefreshToken.revoked_at.is_(None),
+            )
         ).scalars()
     )
+
     now = _now()
+
     for record in records:
         record.revoked_at = now
+
     db.commit()
-    logger.info("revoked refresh family %s (%d tokens, %s)", family_id, len(records), reason)
+
+    logger.info(
+        "revoked refresh family %s (%d tokens, %s)",
+        family_id,
+        len(records),
+        reason,
+    )
+
     return len(records)
 
 
-def prune_expired(db: Session, older_than_days: int = 30) -> int:
+def prune_expired(
+    db: Session,
+    older_than_days: int = 30,
+) -> int:
+    """Delete expired refresh-token records older than the retention period."""
+
     cutoff = _now() - timedelta(days=older_than_days)
-    records = list(db.execute(select(RefreshToken).where(RefreshToken.expires_at < cutoff)).scalars())
+
+    records = list(
+        db.execute(
+            select(RefreshToken).where(
+                RefreshToken.expires_at < cutoff
+            )
+        ).scalars()
+    )
+
     for record in records:
         db.delete(record)
+
     if records:
         db.commit()
+
     return len(records)

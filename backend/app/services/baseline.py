@@ -1,24 +1,28 @@
 """The versioned Global Security Baseline: loading, validation and effective resolution.
 
-The baseline is *data*. This module validates it at startup (so a malformed pack fails
-loudly rather than producing silent verdicts), and resolves the effective control set by
-layering, highest priority last:
+The baseline is *data*. This module validates it at load time so a malformed pack fails
+loudly instead of producing silent verdicts. It then resolves the effective control set
+by layering, highest priority last:
 
-1. **baseline** — shipped, immutable, versioned.
-2. **global override** — a ``policies`` row managed by an administrator (weight,
-   severity, enable/disable, remediation text).
-3. **device exemption** — a documented, per-device decision to accept a deviation.
+1. **baseline**: shipped, versioned, and integrity-checked by SHA-256 at load time.
+2. **global override**: a ``policies`` row managed by an administrator (weight,
+   severity, enable/disable, remediation text). Values are validated before use.
+3. **device exemption**: a documented, per-device decision to accept a deviation. An
+   exemption that has passed its ``expires_at`` is ignored.
 
-Every resolved field records which layer supplied it, so the API can explain *why* a
-control has the weight it has.
+Every resolved field records which layer supplied it, so the API can explain why a
+control has the weight it has. Overrides that reference a control the baseline no
+longer contains are reported in ``EffectiveSet.orphaned_overrides``, not dropped.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -27,25 +31,61 @@ from app.core.config import settings
 
 logger = logging.getLogger("secureconfigai.baseline")
 
-KNOWN_OPS = {
-    "bool_is",
-    "all_bool_true",
-    "int_is",
-    "int_between",
-    "int_at_least",
-    "int_at_most",
-    "all_int_at_least",
-    "enum_in",
-    "list_empty",
+KNOWN_OPS = frozenset(
+    {
+        "bool_is",
+        "all_bool_true",
+        "int_is",
+        "int_between",
+        "int_at_least",
+        "int_at_most",
+        "all_int_at_least",
+        "enum_in",
+        "list_empty",
+    }
+)
+KNOWN_APPLICABILITY = frozenset({"always", "when_supported", "when_present"})
+CONTROL_STATES = frozenset({"compliant", "non_compliant", "not_applicable", "unknown", "error"})
+# The states a control may declare as its expected result. The scanner produces the
+# rest; a control cannot expect them.
+EXPECTABLE_STATES = frozenset({"compliant"})
+
+REQUIRED_PACK_KEYS = (
+    "baseline_id",
+    "version",
+    "title",
+    "controls",
+    "categories",
+    "severity_impact",
+    "thresholds",
+)
+REQUIRED_CONTROL_KEYS = (
+    "title",
+    "category",
+    "weight",
+    "severity",
+    "collector",
+    "expected_state",
+    "applicability",
+    "evaluation",
+    "rationale",
+    "remediation",
+    "references",
+)
+REQUIRED_REMEDIATION_KEYS = ("what_is_wrong", "why_it_matters", "what_should_be_done", "verify")
+REQUIRED_THRESHOLDS = {
+    "risk": ("low_max", "moderate_max", "high_max"),
+    "posture_bands": ("weak", "adequate", "strong"),
+    "risk_model": ("single_control_likelihood",),
 }
-KNOWN_APPLICABILITY = {"always", "when_supported", "when_present"}
-CONTROL_STATES = {"compliant", "non_compliant", "not_applicable", "unknown", "error"}
+OVERRIDABLE_FIELDS = frozenset({"weight", "severity", "is_enabled", "name", "recommendation_template"})
 
 
 class BaselineError(RuntimeError):
-    """The shipped baseline pack is unusable."""
+    """The baseline pack, or a value derived from it, is unusable."""
 
 
+# --------------------------------------------------------------------------- model
 @dataclass(frozen=True)
 class BaselineControl:
     control_id: str
@@ -92,10 +132,11 @@ class Baseline:
     severity_impact: Mapping[str, int]
     controls: tuple[BaselineControl, ...]
     source_path: str
+    content_sha256: str = ""
 
     @property
     def by_id(self) -> dict[str, BaselineControl]:
-        return {c.control_id: c for c in self.controls}
+        return {control.control_id: control for control in self.controls}
 
     @property
     def total_weight(self) -> int:
@@ -103,25 +144,25 @@ class Baseline:
 
     @property
     def risk_likelihood(self) -> float:
-        return float(self.thresholds.get("risk_model", {}).get("single_control_likelihood", 0.5))
+        return float(self.thresholds["risk_model"]["single_control_likelihood"])
 
     def risk_level(self, score: int | float) -> str:
-        risk = self.thresholds.get("risk", {})
-        if score <= risk.get("low_max", 15):
+        risk = self.thresholds["risk"]
+        if score <= risk["low_max"]:
             return "low"
-        if score <= risk.get("moderate_max", 39):
+        if score <= risk["moderate_max"]:
             return "moderate"
-        if score <= risk.get("high_max", 69):
+        if score <= risk["high_max"]:
             return "high"
         return "critical"
 
     def posture_band(self, score: int | float) -> str:
-        bands = self.thresholds.get("posture_bands", {})
-        if score >= bands.get("strong", 90):
+        bands = self.thresholds["posture_bands"]
+        if score >= bands["strong"]:
             return "strong"
-        if score >= bands.get("adequate", 75):
+        if score >= bands["adequate"]:
             return "adequate"
-        if score >= bands.get("weak", 50):
+        if score >= bands["weak"]:
             return "weak"
         return "critical"
 
@@ -134,6 +175,7 @@ class Baseline:
             "description": self.description,
             "published_at": self.published_at,
             "reference_policy": self.reference_policy,
+            "content_sha256": self.content_sha256,
             "references": list(self.references),
             "thresholds": dict(self.thresholds),
             "categories": dict(self.categories),
@@ -161,83 +203,166 @@ class Baseline:
         }
 
 
-def validate_pack(pack: Mapping[str, Any]) -> list[str]:
-    """Return a list of human-readable problems; empty means the pack is usable."""
+# --------------------------------------------------------------------------- validation
+def validate_thresholds(pack: Mapping[str, Any]) -> list[str]:
+    """Every threshold the scoring engine reads must exist and be ordered sensibly."""
     problems: list[str] = []
-    for key in ("baseline_id", "version", "title", "controls", "categories", "severity_impact", "thresholds"):
+    thresholds = pack.get("thresholds")
+    if not isinstance(thresholds, Mapping):
+        return ["thresholds must be an object"]
+
+    for section, keys in REQUIRED_THRESHOLDS.items():
+        block = thresholds.get(section)
+        if not isinstance(block, Mapping):
+            problems.append(f"thresholds.{section} is required")
+            continue
+        for key in keys:
+            if key not in block:
+                problems.append(f"thresholds.{section}.{key} is required")
+
+    def valid_number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    risk = thresholds.get("risk")
+    if isinstance(risk, Mapping) and all(k in risk for k in REQUIRED_THRESHOLDS["risk"]):
+        values = [risk[k] for k in REQUIRED_THRESHOLDS["risk"]]
+        if not all(valid_number(value) for value in values):
+            problems.append("thresholds.risk bounds must be numbers")
+        elif not values[0] < values[1] < values[2]:
+            problems.append("thresholds.risk bounds must be strictly increasing")
+
+    bands = thresholds.get("posture_bands")
+    if isinstance(bands, Mapping) and all(k in bands for k in REQUIRED_THRESHOLDS["posture_bands"]):
+        values = [bands[k] for k in REQUIRED_THRESHOLDS["posture_bands"]]
+        if not all(valid_number(value) for value in values):
+            problems.append("thresholds.posture_bands must be numbers")
+        elif not values[0] < values[1] < values[2]:
+            problems.append("thresholds.posture_bands must be strictly increasing")
+
+    model = thresholds.get("risk_model")
+    if isinstance(model, Mapping) and "single_control_likelihood" in model:
+        likelihood = model["single_control_likelihood"]
+        if isinstance(likelihood, bool) or not isinstance(likelihood, (int, float)) or not 0 < likelihood <= 1:
+            problems.append("thresholds.risk_model.single_control_likelihood must be a number in (0, 1]")
+    return problems
+
+
+def _check_op_arguments(label: str, op: str, evaluation: Mapping[str, Any]) -> list[str]:
+    """Each op reads specific keys. Check them here so evaluation cannot fail per scan."""
+    problems: list[str] = []
+    if op == "int_between" and ("min" not in evaluation or "max" not in evaluation):
+        problems.append(f"{label}: int_between requires 'min' and 'max'")
+    if op in {"int_at_least", "all_int_at_least"} and "min" not in evaluation:
+        problems.append(f"{label}: {op} requires 'min'")
+    if op == "int_at_most" and "max" not in evaluation:
+        problems.append(f"{label}: int_at_most requires 'max'")
+    if op in {"bool_is", "int_is"} and "value" not in evaluation:
+        problems.append(f"{label}: {op} requires 'value'")
+    if op == "enum_in" and not evaluation.get("values"):
+        problems.append(f"{label}: enum_in requires a non-empty 'values' list")
+    return problems
+
+
+def validate_pack(pack: Mapping[str, Any]) -> list[str]:
+    """Return human-readable problems. An empty list means the pack is usable."""
+    problems: list[str] = []
+    for key in REQUIRED_PACK_KEYS:
         if key not in pack:
             problems.append(f"missing required key: {key}")
-    controls = pack.get("controls") or []
+
+    controls = pack.get("controls")
     if not isinstance(controls, list) or not controls:
         problems.append("controls must be a non-empty list")
         return problems
 
+    problems.extend(validate_thresholds(pack))
+
+    categories = pack.get("categories") if isinstance(pack.get("categories"), Mapping) else {}
+    severities = pack.get("severity_impact") if isinstance(pack.get("severity_impact"), Mapping) else {}
     seen: set[str] = set()
-    categories = pack.get("categories") or {}
-    severities = pack.get("severity_impact") or {}
+
     for index, control in enumerate(controls):
-        label = control.get("control_id") or f"controls[{index}]"
-        if not control.get("control_id"):
+        if not isinstance(control, Mapping):
+            problems.append(f"controls[{index}]: must be an object")
+            continue
+
+        control_id = control.get("control_id")
+        label = str(control_id) if control_id else f"controls[{index}]"
+        if not control_id:
             problems.append(f"{label}: missing control_id")
-        elif control["control_id"] in seen:
+        elif str(control_id) in seen:
             problems.append(f"{label}: duplicate control_id")
         else:
-            seen.add(control["control_id"])
-        for key in (
-            "title",
-            "category",
-            "weight",
-            "severity",
-            "collector",
-            "expected_state",
-            "applicability",
-            "evaluation",
-            "rationale",
-            "remediation",
-            "references",
-        ):
+            seen.add(str(control_id))
+
+        for key in REQUIRED_CONTROL_KEYS:
             if key not in control:
                 problems.append(f"{label}: missing {key}")
+
         if control.get("category") and control["category"] not in categories:
             problems.append(f"{label}: unknown category {control['category']!r}")
         if control.get("severity") and control["severity"] not in severities:
             problems.append(f"{label}: unknown severity {control['severity']!r}")
+
         weight = control.get("weight")
-        if not isinstance(weight, int) or not 1 <= weight <= 100:
+        if isinstance(weight, bool):
+            problems.append(f"{label}: weight must be an int, not a bool")
+        elif not isinstance(weight, int) or not 1 <= weight <= 100:
             problems.append(f"{label}: weight must be an int in 1..100")
-        evaluation = control.get("evaluation") or {}
-        if evaluation.get("op") not in KNOWN_OPS:
-            problems.append(f"{label}: unknown evaluation op {evaluation.get('op')!r}")
-        # V4 fix (3.3): per-op required-key validation. evaluate_predicate unpacks
-        # these keys directly, so a pack that passed the old op-name-only check could
-        # blow up per scan/upload with a TypeError instead of failing fast here.
+
+        # expected_state is a descriptive security expectation,
+        # not a scanner-generated control status.
+        expected = control.get("expected_state")
+        if not isinstance(expected, str) or not expected.strip():
+            problems.append(
+                f"{label}: expected_state must be a non-empty string"
+            )
+
+        evaluation = control.get("evaluation") if isinstance(control.get("evaluation"), Mapping) else {}
         op = evaluation.get("op")
-        if op == "int_between" and ("min" not in evaluation or "max" not in evaluation):
-            problems.append(f"{label}: int_between requires integer 'min' and 'max'")
-        if op in {"int_at_least", "all_int_at_least"} and "min" not in evaluation:
-            problems.append(f"{label}: {op} requires integer 'min'")
-        if op == "int_at_most" and "max" not in evaluation:
-            problems.append(f"{label}: int_at_most requires integer 'max'")
-        if op in {"bool_is", "int_is"} and "value" not in evaluation:
-            problems.append(f"{label}: {op} requires 'value'")
-        if op == "enum_in" and not evaluation.get("values"):
-            problems.append(f"{label}: enum_in requires a non-empty 'values' list")
+        if op not in KNOWN_OPS:
+            problems.append(f"{label}: unknown evaluation op {op!r}")
+        else:
+            problems.extend(_check_op_arguments(label, str(op), evaluation))
         if not evaluation.get("paths") and not evaluation.get("path"):
             problems.append(f"{label}: evaluation needs at least one path")
-        applicability = control.get("applicability") or {}
-        if applicability.get("type") not in KNOWN_APPLICABILITY:
-            problems.append(f"{label}: unknown applicability type {applicability.get('type')!r}")
-        if applicability.get("type") in {"when_supported", "when_present"} and not applicability.get("paths"):
-            problems.append(f"{label}: applicability {applicability.get('type')} needs paths")
-        remediation = control.get("remediation") or {}
-        for key in ("what_is_wrong", "why_it_matters", "what_should_be_done", "verify"):
+
+        applicability = control.get("applicability") if isinstance(control.get("applicability"), Mapping) else {}
+        app_type = applicability.get("type")
+        if app_type not in KNOWN_APPLICABILITY:
+            problems.append(f"{label}: unknown applicability type {app_type!r}")
+        elif app_type in {"when_supported", "when_present"} and not applicability.get("paths"):
+            problems.append(f"{label}: applicability {app_type} needs paths")
+
+        remediation = control.get("remediation") if isinstance(control.get("remediation"), Mapping) else {}
+        for key in REQUIRED_REMEDIATION_KEYS:
             if not remediation.get(key):
                 problems.append(f"{label}: remediation.{key} is required")
+
         if not control.get("references"):
             problems.append(f"{label}: at least one standard reference is required")
     return problems
 
 
+def validate_override_values(
+    *,
+    weight: int | None = None,
+    severity: str | None = None,
+    severity_impact: Mapping[str, int],
+) -> None:
+    """Reject override values the scoring engine cannot interpret.
+
+    Call this when an override is saved, so invalid values fail at write time rather
+    than during scoring.
+    """
+    if weight is not None:
+        if isinstance(weight, bool) or not isinstance(weight, int) or not 1 <= weight <= 100:
+            raise BaselineError("override weight must be an integer in 1..100")
+    if severity is not None and severity not in severity_impact:
+        raise BaselineError(f"override severity {severity!r} is not a known severity")
+
+
+# --------------------------------------------------------------------------- loading
 def _parse_control(raw: Mapping[str, Any]) -> BaselineControl:
     return BaselineControl(
         control_id=str(raw["control_id"]),
@@ -251,26 +376,31 @@ def _parse_control(raw: Mapping[str, Any]) -> BaselineControl:
         evaluation=dict(raw["evaluation"]),
         evidence_paths=tuple(str(p) for p in raw.get("evidence_paths", [])),
         rationale=str(raw["rationale"]),
-        remediation={k: str(v) for k, v in (raw.get("remediation") or {}).items()},
-        references=tuple(dict(r) for r in raw.get("references", [])),
+        remediation={k: str(v) for k, v in dict(raw["remediation"]).items()},
+        references=tuple(dict(r) for r in raw["references"]),
     )
 
 
 @lru_cache(maxsize=4)
 def load_baseline(path: str | None = None) -> Baseline:
-    """Load and validate the baseline pack. Raises :class:`BaselineError`."""
+    """Load, validate and fingerprint the baseline pack. Raises :class:`BaselineError`."""
     resolved = Path(path) if path else settings.baseline_path
     if not resolved.exists():
         raise BaselineError(f"baseline pack not found: {resolved}")
+
     try:
-        pack = json.loads(resolved.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise BaselineError(f"baseline pack is not valid JSON: {exc}") from exc
+        raw_bytes = resolved.read_bytes()
+        pack = json.loads(raw_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BaselineError(f"baseline pack could not be read as UTF-8 JSON: {exc}") from exc
+    if not isinstance(pack, dict):
+        raise BaselineError("baseline pack must be a JSON object")
 
     problems = validate_pack(pack)
     if problems:
         raise BaselineError("baseline pack failed validation:\n  - " + "\n  - ".join(problems))
 
+    controls = tuple(_parse_control(c) for c in pack["controls"])
     baseline = Baseline(
         baseline_id=str(pack["baseline_id"]),
         version=str(pack["version"]),
@@ -283,13 +413,15 @@ def load_baseline(path: str | None = None) -> Baseline:
         thresholds=dict(pack["thresholds"]),
         categories={k: dict(v) for k, v in pack["categories"].items()},
         severity_impact={k: int(v) for k, v in pack["severity_impact"].items()},
-        controls=tuple(_parse_control(c) for c in pack["controls"]),
+        controls=controls,
         source_path=str(resolved),
+        content_sha256=hashlib.sha256(raw_bytes).hexdigest(),
     )
     logger.info(
-        "baseline loaded id=%s version=%s controls=%d weight=%d",
+        "baseline loaded id=%s version=%s sha256=%s controls=%d weight=%d",
         baseline.baseline_id,
         baseline.version,
+        baseline.content_sha256[:12],
         len(baseline.controls),
         baseline.total_weight,
     )
@@ -302,6 +434,11 @@ def reload_baseline() -> Baseline:
 
 
 # --------------------------------------------------------------------------- effective
+def _aware(value: datetime) -> datetime:
+    """Database timestamps can come back naive (SQLite). Treat them as UTC."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 @dataclass
 class EffectiveControl:
     """A baseline control after global and device-level policy has been applied."""
@@ -315,7 +452,7 @@ class EffectiveControl:
     sources: dict[str, str] = field(default_factory=dict)
     exempted: bool = False
     exemption_reason: str | None = None
-    exemption_expires_at: Any | None = None
+    exemption_expires_at: datetime | None = None
 
     @property
     def control_id(self) -> str:
@@ -328,9 +465,9 @@ class EffectiveControl:
     @property
     def override_applied(self) -> bool:
         return any(
-            v != "baseline"
-            for k, v in self.sources.items()
-            if k in {"weight", "severity", "enabled", "remediation", "title"}
+            value != "baseline"
+            for key, value in self.sources.items()
+            if key in OVERRIDABLE_FIELDS or key in {"weight", "severity", "enabled", "remediation", "title"}
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -351,6 +488,9 @@ class EffectiveControl:
             "sources": dict(self.sources),
             "exempted": self.exempted,
             "exemption_reason": self.exemption_reason,
+            "exemption_expires_at": (
+                self.exemption_expires_at.isoformat() if self.exemption_expires_at else None
+            ),
         }
 
 
@@ -358,6 +498,7 @@ class EffectiveControl:
 class EffectiveSet:
     baseline: Baseline
     controls: tuple[EffectiveControl, ...]
+    orphaned_overrides: tuple[str, ...] = ()
 
     @property
     def by_id(self) -> dict[str, EffectiveControl]:
@@ -368,26 +509,88 @@ class EffectiveSet:
         return sum(c.weight for c in self.controls if c.enabled and not c.exempted)
 
     def version(self) -> str:
+        """Return the baseline version (kept callable for existing scan-service callers)."""
         return self.baseline.version
+
+
+def _apply_override(
+    spec: BaselineControl,
+    override: Any,
+    severity_impact: Mapping[str, int],
+    sources: dict[str, str],
+) -> tuple[int, str, bool, str, Mapping[str, str]]:
+    """Return (weight, severity, enabled, title, remediation) after one override."""
+    weight, severity = spec.weight, spec.severity
+    enabled = True
+    title = spec.title
+    remediation: Mapping[str, str] = dict(spec.remediation)
+
+    new_weight = getattr(override, "weight", None)
+    if new_weight is not None:
+        validate_override_values(weight=new_weight, severity_impact=severity_impact)
+        weight = new_weight
+        sources["weight"] = "override"
+
+    new_severity = getattr(override, "severity", None)
+    if new_severity is not None:
+        validate_override_values(severity=str(new_severity), severity_impact=severity_impact)
+        severity = str(new_severity)
+        sources["severity"] = "override"
+
+    is_enabled = getattr(override, "is_enabled", None)
+    if is_enabled is not None:
+        enabled = bool(is_enabled)
+        sources["enabled"] = "override"
+
+    name = getattr(override, "name", None)
+    if name:
+        title = str(name)
+        sources["title"] = "override"
+
+    template = getattr(override, "recommendation_template", None)
+    if template:
+        remediation = {**remediation, "what_should_be_done": str(template)}
+        sources["remediation"] = "override"
+
+    return weight, severity, enabled, title, remediation
 
 
 def resolve_effective(
     baseline: Baseline,
     overrides: Iterable[Any] | None = None,
     exemptions: Iterable[Any] | None = None,
+    *,
+    now: datetime | None = None,
 ) -> EffectiveSet:
-    """Layer global overrides and device exemptions onto the baseline."""
+    """Layer global overrides and live device exemptions onto the baseline.
+
+    Expired exemptions are ignored, and the check uses ``now`` so callers can pin time
+    in tests. Overrides for controls the baseline no longer contains are returned in
+    ``orphaned_overrides`` and logged.
+    """
+    current = now or datetime.now(UTC)
+    known = baseline.by_id
+
     override_map: dict[str, Any] = {}
+    orphaned: set[str] = set()
     for override in overrides or ():
-        key = getattr(override, "control_id", None) or getattr(override, "rule_key", None)
-        if key:
-            override_map[str(key)] = override
+        key = str(getattr(override, "control_id", "") or "")
+        if not key:
+            continue
+        if key in known:
+            override_map[key] = override
+        else:
+            orphaned.add(key)
 
     exemption_map: dict[str, Any] = {}
     for exemption in exemptions or ():
-        key = getattr(exemption, "control_id", None)
-        if key:
-            exemption_map[str(key)] = exemption
+        key = str(getattr(exemption, "control_id", "") or "")
+        expires = getattr(exemption, "expires_at", None)
+        if not key:
+            continue
+        if expires is not None and _aware(expires) <= current:
+            continue  # lapsed: the deviation is no longer accepted
+        exemption_map[key] = exemption
 
     resolved: list[EffectiveControl] = []
     for spec in baseline.controls:
@@ -397,35 +600,22 @@ def resolve_effective(
             "enabled": "baseline",
             "title": "baseline",
             "remediation": "baseline",
+            "exemption": "none",
         }
-        weight, severity = spec.weight, spec.severity
-        enabled = True
-        title = spec.title
-        remediation = dict(spec.remediation)
+        weight, severity, enabled, title, remediation = spec.weight, spec.severity, True, spec.title, dict(spec.remediation)
 
         override = override_map.get(spec.control_id)
         if override is not None:
-            if getattr(override, "weight", None):
-                weight = int(override.weight)
-                sources["weight"] = "override"
-            if getattr(override, "severity", None):
-                severity = str(override.severity)
-                sources["severity"] = "override"
-            if getattr(override, "is_enabled", None) is not None:
-                enabled = bool(override.is_enabled)
-                sources["enabled"] = "override"
-            if getattr(override, "name", None):
-                title = str(override.name)
-                sources["title"] = "override"
-            if getattr(override, "recommendation_template", None):
-                remediation = {**remediation, "what_should_be_done": str(override.recommendation_template)}
-                sources["remediation"] = "override"
+            weight, severity, enabled, title, remediation = _apply_override(
+                spec, override, baseline.severity_impact, sources
+            )
 
         exemption = exemption_map.get(spec.control_id)
         exempted = exemption is not None
         if exempted:
-            sources["enabled"] = "device-exemption"
+            sources["exemption"] = "device-exemption"
 
+        expires = getattr(exemption, "expires_at", None) if exempted else None
         resolved.append(
             EffectiveControl(
                 spec=spec,
@@ -436,8 +626,19 @@ def resolve_effective(
                 remediation=remediation,
                 sources=sources,
                 exempted=exempted,
-                exemption_reason=getattr(exemption, "reason", None),
-                exemption_expires_at=getattr(exemption, "expires_at", None),
+                exemption_reason=getattr(exemption, "reason", None) if exempted else None,
+                exemption_expires_at=_aware(expires) if expires is not None else None,
             )
         )
-    return EffectiveSet(baseline=baseline, controls=tuple(resolved))
+
+    if orphaned:
+        logger.warning(
+            "overrides reference controls not in baseline %s: %s",
+            baseline.version,
+            sorted(orphaned),
+        )
+    return EffectiveSet(
+        baseline=baseline,
+        controls=tuple(resolved),
+        orphaned_overrides=tuple(sorted(orphaned)),
+    )

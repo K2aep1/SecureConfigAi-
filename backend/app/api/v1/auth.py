@@ -1,21 +1,29 @@
 """Authentication: registration, sign-in, token rotation, sign-out.
 
 Security properties enforced here:
+
 * password rules come from the platform security policy (single source of truth);
 * per-address and per-account rate limits on sign-in, plus a database-backed lockout
   that survives a restart and is visible to administrators;
-* identical error text for "unknown account" and "wrong password" (no enumeration);
+* every sign-in verifies the password before any account-state decision, so an
+  unauthenticated caller cannot learn whether an account exists, is locked or is
+  disabled;
 * refresh tokens are rotated and stored as fingerprints, with reuse detection that
   revokes the whole family;
-* every attempt — success or failure — is written to the audit chain.
+* every attempt, success or failure, is written to the audit chain. Email addresses
+  in audit details are stored as keyed hashes, not in clear text.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta ,timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import audit, security
@@ -41,21 +49,65 @@ logger = logging.getLogger("secureconfigai.auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _INVALID_CREDENTIALS = "Invalid email or password"
+_EMAIL_EXISTS = "Email already registered"
 
-# V4 fix (L-1): computed once at import time so the unknown-account login path costs
-# exactly one bcrypt verify — identical to the known-account path.
+# Computed once at import time, so the unknown-account path performs the same single
+# bcrypt verification as the known-account path.
 _DUMMY_PASSWORD_HASH = security.hash_password("placeholder-value")
 
 
-def _utcnow():
-    from datetime import datetime
-
+# --------------------------------------------------------------------------- helpers
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _normalise_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _email_fingerprint(email: str) -> str:
+    """Keyed hash of an email for audit details. The log keeps linkage, not the address."""
+    key = settings.JWT_SECRET_KEY.encode("utf-8")
+    return hmac.new(key, _normalise_email(email).encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+
+
+def _find_user(db: Session, email: str) -> User | None:
+    return db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+
+
+def _invalid_credentials() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS)
+
+
+def _audit_login(
+    db: Session,
+    request: Request,
+    action: str,
+    *,
+    email: str,
+    user: User | None = None,
+    outcome: str = "failure",
+    details: dict | None = None,
+) -> None:
+    payload = {"email_fp": _email_fingerprint(email)}
+    if details:
+        payload.update(details)
+    audit.record(
+        db,
+        action,
+        actor=user,
+        entity_type="user",
+        entity_id=user.id if user else None,
+        request=request,
+        outcome=outcome,
+        details=payload,
+    )
+
+
+# --------------------------------------------------------------------------- policy
 @router.get("/policy", response_model=AuthPolicyOut)
 def auth_policy() -> AuthPolicyOut:
-    """Public password/session rules so the UI can validate before submitting."""
+    """Public password and session rules, so the UI can validate before submitting."""
     rules = platform_policy.password_rules
     return AuthPolicyOut(
         password={
@@ -73,23 +125,28 @@ def auth_policy() -> AuthPolicyOut:
     )
 
 
+# --------------------------------------------------------------------------- register
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, request: Request, db: Session = Depends(get_db)) -> UserOut:
     enforce("auth.register", f"ip:{client_ip(request)}", detail="Too many registration attempts.")
-    existing = db.query(User).filter(User.email == payload.email).one_or_none()
-    if existing is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+    email = _normalise_email(payload.email)
 
     user = User(
-        email=payload.email,
+        email=email,
         password_hash=security.hash_password(payload.password),
         full_name=payload.full_name,
         role="user",  # never client-selectable
         is_active=True,
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # The unique constraint is the real guard. A read-then-write check would race.
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_EMAIL_EXISTS) from None
     db.refresh(user)
+
     audit.record(
         db,
         "auth.register",
@@ -97,105 +154,118 @@ def register(payload: UserCreate, request: Request, db: Session = Depends(get_db
         entity_type="user",
         entity_id=user.id,
         request=request,
-        details={"email": user.email},
+        details={"email_fp": _email_fingerprint(email)},
     )
     return UserOut.model_validate(user)
 
 
+# --------------------------------------------------------------------------- sign-in
+def _record_failure(db: Session, user: User, now: datetime) -> bool:
+    """Count one failed password. Returns True if this failure triggered a lockout."""
+    user.failed_login_count = (user.failed_login_count or 0) + 1
+    locked = user.failed_login_count >= settings.MAX_FAILED_LOGINS
+    if locked:
+        user.locked_until = now + timedelta(minutes=settings.LOCKOUT_MINUTES)
+    db.commit()
+    return locked
+
+
+def _clear_expired_lockout(db: Session, user: User, now: datetime) -> None:
+    """Reset the counter once a lockout window has fully elapsed.
+
+    Normalizes database timestamps to UTC before comparison because
+    SQLite may return naive datetimes for timezone-aware columns.
+    """
+    locked_until = user.locked_until
+
+    if locked_until is None:
+        return
+
+    # Normalize the database timestamp to UTC.
+    if locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+
+    # Normalize the current timestamp to UTC.
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    if locked_until <= now:
+        user.locked_until = None
+        user.failed_login_count = 0
+        db.commit()
+
+
 @router.post("/login", response_model=TokenPair)
 def login(payload: UserLogin, request: Request, db: Session = Depends(get_db)) -> TokenPair:
+    email = _normalise_email(payload.email)
     enforce(
         "auth.login",
         f"ip:{client_ip(request)}",
-        f"email:{payload.email}",
+        f"email:{email}",
         detail="Too many sign-in attempts.",
     )
-    user = db.query(User).filter(User.email == payload.email).one_or_none()
+    now = _utcnow()
+    user = _find_user(db, email)
 
     if user is None:
-        # Same message and exactly the same work regardless of account existence.
-        # V4 fix (L-1): a precomputed dummy hash keeps this path at ONE bcrypt
-        # operation — the same cost as the known-user path below — removing the
-        # ~2x timing oracle (hash + verify) that previously betrayed whether an
-        # email existed.
+        # Same work as the known-account path. Nothing observable differs.
         security.verify_password(payload.password, _DUMMY_PASSWORD_HASH)
-        audit.record(
+        _audit_login(db, request, "auth.login.failure", email=email, details={"reason": "unknown"})
+        raise _invalid_credentials()
+
+    _clear_expired_lockout(db, user, now)
+
+    # The password is verified before any account-state decision. Locked and disabled
+    # accounts are therefore revealed only to someone who already knows the password.
+    password_ok = security.verify_password(payload.password, user.password_hash)
+
+    if not password_ok:
+        if user.is_locked:
+            # Do not keep counting while locked; the window is already enforced.
+            _audit_login(
+                db, request, "auth.login.failure", email=email, user=user, details={"reason": "bad_password_while_locked"}
+            )
+            raise _invalid_credentials()
+        locked = _record_failure(db, user, now)
+        _audit_login(
             db,
+            request,
             "auth.login.failure",
-            entity_type="user",
-            request=request,
-            outcome="failure",
-            details={"email": payload.email, "reason": "unknown"},
+            email=email,
+            user=user,
+            details={"failed_count": user.failed_login_count, "locked": locked},
         )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS)
+        raise _invalid_credentials()
 
     if user.is_locked:
-        audit.record(
-            db,
-            "auth.login.locked",
-            actor=user,
-            entity_type="user",
-            entity_id=user.id,
-            request=request,
-            outcome="failure",
-            details={"locked_until": user.locked_until.isoformat()},
-        )
+        _audit_login(db, request, "auth.login.locked", email=email, user=user)
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
             detail="Account is locked. Try again later or contact an administrator.",
         )
 
-    # V4 fix (H-2): the failure counter decays once a lockout window has fully
-    # elapsed. Previously the counter was only cleared by a successful login or an
-    # administrator, so after any lockout a single new failure re-locked the
-    # account — one request per lockout period kept a known user locked forever.
-    if user.locked_until is not None:
-        user.locked_until = None
-        user.failed_login_count = 0
-        db.commit()
-
     if not user.is_active:
-        audit.record(
-            db,
-            "auth.login.disabled",
-            actor=user,
-            entity_type="user",
-            entity_id=user.id,
-            request=request,
-            outcome="failure",
-        )
+        _audit_login(db, request, "auth.login.disabled", email=email, user=user)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is disabled")
-
-    if not security.verify_password(payload.password, user.password_hash):
-        user.failed_login_count = (user.failed_login_count or 0) + 1
-        locked = user.failed_login_count >= settings.MAX_FAILED_LOGINS
-        if locked:
-            user.locked_until = _utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
-        db.commit()
-        audit.record(
-            db,
-            "auth.login.failure",
-            actor=user,
-            entity_type="user",
-            entity_id=user.id,
-            request=request,
-            outcome="failure",
-            details={"failed_count": user.failed_login_count, "locked": locked},
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS)
 
     user.failed_login_count = 0
     user.locked_until = None
-    user.last_login_at = _utcnow()
+    user.last_login_at = now
     db.commit()
 
     tokens = token_service.issue_pair(
-        db, user, ip_address=client_ip(request), user_agent=request.headers.get("user-agent")
+        db,
+        user,
+        ip_address=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
     )
-    audit.record(db, "auth.login.success", actor=user, entity_type="user", entity_id=user.id, request=request)
+    _audit_login(db, request, "auth.login.success", email=email, user=user, outcome="success")
     return TokenPair(**tokens)
 
 
+# --------------------------------------------------------------------------- tokens
 @router.post("/refresh", response_model=TokenPair)
 def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get_db)) -> TokenPair:
     enforce("auth.refresh", f"ip:{client_ip(request)}", detail="Too many token refresh calls.")
@@ -220,20 +290,27 @@ def refresh(payload: RefreshRequest, request: Request, db: Session = Depends(get
                 detail="Refresh token reuse detected; all sessions for this account were signed out.",
             ) from exc
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
         ) from exc
+
     audit.record(db, "auth.refresh", actor=user, entity_type="user", entity_id=user.id, request=request)
     return TokenPair(**tokens)
 
 
 @router.post("/logout", response_model=MessageOut)
 def logout(
+    request: Request,
     payload: LogoutRequest | None = None,
-    request: Request = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MessageOut:
-    revoked = token_service.revoke(db, payload.refresh_token if payload else None)
+    """Revoke the supplied refresh token, if it belongs to the caller."""
+    revoked = token_service.revoke(
+        db,
+        payload.refresh_token if payload else None,
+        user_id=current_user.id,
+    )
     audit.record(
         db,
         "auth.logout",
@@ -248,9 +325,12 @@ def logout(
 
 @router.post("/logout-all", response_model=MessageOut)
 def logout_all(
-    request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> MessageOut:
-    count = token_service.revoke_all_for_user(db, current_user.id)
+    count = token_service.revoke_all_for_user(db, current_user.id, reason="logout_all")
+    db.commit()
     audit.record(
         db,
         "auth.logout",

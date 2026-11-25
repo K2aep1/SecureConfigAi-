@@ -346,7 +346,7 @@ def test_global_override_changes_weight_severity_and_state(baseline):
     assert "disabled by a global policy override" in " ".join(fw.notes)
 
 
-def test_device_exemption_marks_not_applicable_with_reason(baseline):
+def test_device_exemption_marks_accepted_risk_with_reason(baseline):
 
     class Exemption:
         control_id = "NET-RDP-001"
@@ -354,13 +354,33 @@ def test_device_exemption_marks_not_applicable_with_reason(baseline):
         expires_at = None
 
     effective = resolve_effective(baseline, [], [Exemption])
-    controls = {c.control_id: c for c in build_controls(failing_document(), effective, criticality=3)}
+
+    controls = {
+        c.control_id: c
+        for c in build_controls(
+            failing_document(),
+            effective,
+            criticality=3,
+        )
+    }
+
     rdp = controls["NET-RDP-001"]
-    assert rdp.status == "not_applicable"
+
+    # Actual security verdict remains unchanged.
+    assert rdp.status == "non_compliant"
+
+    # Exemption is explicitly recorded.
     assert rdp.exempted is True
-    assert "on-call jump host" in " ".join(rdp.notes)
+    assert rdp.exemption_reason == (
+        "RDP is required for the on-call jump host."
+    )
 
+    # Accepted violations are not open failures.
+    assert rdp.accepted_risk is True
+    assert rdp.open_failure is False
 
+    # Accepted violations do not contribute to open risk.
+    assert rdp.risk_contribution == 0.0
 def test_findings_carry_remediation_and_references(effective):
     controls = build_controls(failing_document(), effective, criticality=3)
     findings = build_findings(controls)
@@ -369,11 +389,7 @@ def test_findings_carry_remediation_and_references(effective):
         assert finding["remediation"]["what_should_be_done"]
         assert finding["remediation"]["verify"]
         assert finding["standard_refs"]
-        assert (
-            finding["severity"]
-            in scoring.build_scan_result(controls, findings, effective, criticality=3)["assessment"]
-            or True
-        )
+        assert finding["severity"] in effective.baseline.severity_impact
 
 
 def test_missing_baseline_file_raises(tmp_path):

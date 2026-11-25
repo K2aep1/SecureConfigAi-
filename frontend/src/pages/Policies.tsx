@@ -1,5 +1,5 @@
 /**
- * Policies — baseline overrides.
+ * Policies: baseline overrides.
  *
  * Behaviours that matter here:
  *  - `include_disabled` is a documented query parameter, so the toggle maps onto
@@ -11,7 +11,7 @@
  *    `GET /policies/effective` (admin-only, so it is only requested for admins).
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createPolicy,
@@ -24,7 +24,7 @@ import {
 import { DEFAULT_PAGE_SIZE, useCursorList } from '../hooks/useCursorList';
 import { useDebouncedValue, useDocumentTitle } from '../hooks/useAppData';
 import { DataTable, LoadMore, type Column } from '../components/DataTable';
-import { EnabledBadge, PolicyLayerBadge, SeverityBadge, NeutralBadge } from '../components/Badges';
+import { EnabledBadge, NeutralBadge, PolicyLayerBadge, SeverityBadge } from '../components/Badges';
 import { Drawer } from '../components/Drawer';
 import { EmptyState, ErrorState, Notice } from '../components/States';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -34,6 +34,46 @@ import { errorToastMessage } from '../lib/errors';
 import { formatJsonInline, humanize } from '../lib/format';
 import { tryParseJsonValue } from '../lib/json';
 import type { EffectiveControl, Policy } from '../types';
+
+/* ---------- Types derived from the API ---------- */
+
+type EffectiveResponse = Awaited<ReturnType<typeof getEffectivePolicies>>;
+type ResolvedControl = EffectiveResponse['controls'][number];
+
+interface OverrideForm {
+  name: string;
+  controlId: string;
+  category: string;
+  severity: string;
+  weight: string;
+  description: string;
+  expectedValue: string;
+  recommendation: string;
+  isEnabled: boolean;
+}
+
+/* ---------- Constants ---------- */
+
+const PAGE_PARAMS_STALE_MS = 10_000;
+const EFFECTIVE_STALE_MS = 30_000;
+const SEARCH_DEBOUNCE_MS = 300;
+
+const SEVERITY_CHOICES = ['critical', 'high', 'medium', 'low', 'informational'] as const;
+const DEFAULT_EXPECTED_JSON = '{\n  "operator": "==",\n  "value": true\n}';
+
+const EMPTY_FORM: OverrideForm = {
+  name: '',
+  controlId: '',
+  category: '',
+  severity: 'medium',
+  weight: '1',
+  description: '',
+  expectedValue: DEFAULT_EXPECTED_JSON,
+  recommendation: '',
+  isEnabled: true,
+};
+
+/* ---------- Pure helpers ---------- */
 
 /**
  * `/policies/effective` reports the winning layer per field in `sources`
@@ -48,32 +88,55 @@ function dominantLayer(sources: Record<string, string> | undefined): string | nu
   return layers[0] ?? 'baseline';
 }
 
-function policyTarget(policy: Policy): string {
-  return policy.control_id;
+function indexByControl(controls: readonly EffectiveControl[]): Map<string, EffectiveControl> {
+  const map = new Map<string, EffectiveControl>();
+  for (const control of controls) {
+    if (control.control_id) map.set(control.control_id, control);
+  }
+  return map;
+}
+
+function matchesSearch(policy: Policy, needle: string): boolean {
+  return `${policy.name} ${policy.control_id} ${policy.category ?? ''} ${policy.description ?? ''}`
+    .toLowerCase()
+    .includes(needle);
+}
+
+/* ---------- Shared presentational pieces ---------- */
+
+/** Baseline value, arrow, then the resolved value (passed as children). */
+function BaselineArrow({ baseline, children }: { baseline: ReactNode; children: ReactNode }) {
+  return (
+    <>
+      <span className="resolved-baseline">{baseline}</span>
+      <span aria-hidden="true">→</span>
+      {children}
+    </>
+  );
 }
 
 function ResolvedComparison({ control }: { control: EffectiveControl | undefined }) {
   if (!control) {
     return <span className="muted">Not present in the resolved control set</span>;
   }
-  const weightOverridden = control.weight !== control.baseline_weight;
-  const severityOverridden = control.severity !== control.baseline_severity;
 
   return (
     <span className="cell-stack resolved">
       <span className="resolved-row">
         <span className="resolved-label">weight</span>
-        <span className="resolved-baseline">{control.baseline_weight}</span>
-        <span aria-hidden="true">→</span>
-        <strong>{control.weight}</strong>
-        {weightOverridden ? <PolicyLayerBadge layer={control.sources?.weight ?? null} /> : null}
+        <BaselineArrow baseline={control.baseline_weight}>
+          <strong>{control.weight}</strong>
+        </BaselineArrow>
+        {control.weight !== control.baseline_weight ? (
+          <PolicyLayerBadge layer={control.sources?.weight ?? null} />
+        ) : null}
       </span>
       <span className="resolved-row">
         <span className="resolved-label">severity</span>
-        <span className="resolved-baseline">{humanize(control.baseline_severity)}</span>
-        <span aria-hidden="true">→</span>
-        <strong>{humanize(control.severity)}</strong>
-        {severityOverridden ? (
+        <BaselineArrow baseline={humanize(control.baseline_severity)}>
+          <strong>{humanize(control.severity)}</strong>
+        </BaselineArrow>
+        {control.severity !== control.baseline_severity ? (
           <PolicyLayerBadge layer={control.sources?.severity ?? null} />
         ) : null}
       </span>
@@ -81,40 +144,294 @@ function ResolvedComparison({ control }: { control: EffectiveControl | undefined
   );
 }
 
+/* ---------- Page ---------- */
+
 export default function PoliciesPage() {
   useDocumentTitle('Policies · SecureConfigAI');
   const { isAdmin } = useSession();
-  const toast = useToast();
-  const confirm = useConfirm();
-  const queryClient = useQueryClient();
 
   const [includeDisabled, setIncludeDisabled] = useState(true);
-  const [search, setSearch] = useState('');
-  const debouncedSearch = useDebouncedValue(search, 300);
   const [showCreate, setShowCreate] = useState(false);
+
+  const effective = useQuery({
+    queryKey: queryKeys.policies.effective(),
+    enabled: isAdmin,
+    staleTime: EFFECTIVE_STALE_MS,
+    queryFn: ({ signal }) => getEffectivePolicies(signal),
+  });
+
+  const effectiveByControl = useMemo(
+    () => indexByControl(effective.data?.controls ?? []),
+    [effective.data],
+  );
+
+  return (
+    <div className="page">
+      <PageIntro
+        isAdmin={isAdmin}
+        onCreate={() => setShowCreate(true)}
+        onRefresh={() => void 0}
+      />
+
+      {!isAdmin ? <ReadOnlyNotice /> : null}
+
+      <OverridesPanel
+        isAdmin={isAdmin}
+        includeDisabled={includeDisabled}
+        onIncludeDisabledChange={setIncludeDisabled}
+        effectiveByControl={effectiveByControl}
+        onCreate={() => setShowCreate(true)}
+        effectiveError={isAdmin && effective.isError ? effective : null}
+      />
+
+      {isAdmin ? <ResolvedSetPanel query={effective} /> : null}
+
+      <CreatePolicyDrawer open={showCreate} onClose={() => setShowCreate(false)} />
+    </div>
+  );
+}
+
+/* ---------- Sections ---------- */
+
+function PageIntro({
+  isAdmin,
+  onCreate,
+  onRefresh,
+}: {
+  isAdmin: boolean;
+  onCreate: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="page-intro">
+      <div>
+        <span className="eyebrow">Policy management</span>
+        <h2>Policies</h2>
+        <p>
+          Overrides layer over the shipped baseline. Resolution order is baseline → override →
+          device, and the resolved value is shown next to each override.
+        </p>
+      </div>
+      <div className="inline-actions">
+        <button type="button" className="button button-light" onClick={onRefresh}>
+          Refresh
+        </button>
+        {isAdmin ? (
+          <button type="button" className="button button-primary" onClick={onCreate}>
+            New override
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ReadOnlyNotice() {
+  return (
+    <Notice tone="info" title="Read-only view">
+      Creating, enabling, disabling and deleting overrides are administrator actions, and
+      `GET /policies/effective` is admin-only, so resolved baseline values are not shown. The API
+      will also refuse these writes with a 403.
+    </Notice>
+  );
+}
+
+function OverridesPanel({
+  isAdmin,
+  includeDisabled,
+  onIncludeDisabledChange,
+  effectiveByControl,
+  onCreate,
+  effectiveError,
+}: {
+  isAdmin: boolean;
+  includeDisabled: boolean;
+  onIncludeDisabledChange: (value: boolean) => void;
+  effectiveByControl: Map<string, EffectiveControl>;
+  onCreate: () => void;
+  effectiveError: { error: unknown; refetch: () => unknown } | null;
+}) {
+  const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
 
   const params = { limit: DEFAULT_PAGE_SIZE, include_disabled: includeDisabled };
 
   const policies = useCursorList<Policy>({
     queryKey: queryKeys.policies.list(params),
     fetchPage: (cursor, signal) => listPolicies({ ...params, cursor }, signal),
-    staleTime: 10_000,
+    staleTime: PAGE_PARAMS_STALE_MS,
   });
 
-  const effective = useQuery({
-    queryKey: queryKeys.policies.effective(),
-    enabled: isAdmin,
-    staleTime: 30_000,
-    queryFn: ({ signal }) => getEffectivePolicies(signal),
-  });
+  const mutations = usePolicyMutations(isAdmin);
 
-  const effectiveByControl = useMemo(() => {
-    const map = new Map<string, EffectiveControl>();
-    for (const control of effective.data?.controls ?? []) {
-      if (control.control_id) map.set(control.control_id, control);
-    }
-    return map;
-  }, [effective.data]);
+  const rows = useMemo(() => {
+    const needle = debouncedSearch.trim().toLowerCase();
+    if (!needle) return policies.items;
+    return policies.items.filter((policy) => matchesSearch(policy, needle));
+  }, [policies.items, debouncedSearch]);
+
+  const columns = useMemo(
+    () =>
+      buildOverrideColumns({
+        isAdmin,
+        effectiveByControl,
+        toggling: mutations.toggle.isPending,
+        removing: mutations.remove.isPending,
+        onToggle: (policy) => mutations.toggle.mutate(policy.id),
+        onDelete: (policy) => void mutations.requestDelete(policy),
+      }),
+    [isAdmin, effectiveByControl, mutations],
+  );
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Overrides</h2>
+          <p>
+            {policies.count} loaded{includeDisabled ? '' : ' · disabled overrides hidden'}
+          </p>
+        </div>
+        <div className="table-tools">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={includeDisabled}
+              onChange={(event) => onIncludeDisabledChange(event.target.checked)}
+            />
+            <span>Include disabled</span>
+          </label>
+          <label className="field field-inline">
+            <span className="visually-hidden">Search overrides</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search overrides"
+            />
+          </label>
+        </div>
+      </div>
+
+      {policies.isError ? (
+        <ErrorState error={policies.error} onRetry={policies.reload} scope="Policy overrides" />
+      ) : (
+        <>
+          <DataTable
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => row.id}
+            caption="Policy overrides layered over the baseline"
+            busy={policies.isLoading}
+            busyLabel="Loading overrides…"
+            empty={
+              <OverridesEmpty
+                noneDefined={policies.items.length === 0}
+                isAdmin={isAdmin}
+                onCreate={onCreate}
+              />
+            }
+          />
+          <LoadMore
+            hasMore={policies.hasMore}
+            isLoading={policies.isLoadingMore}
+            onLoadMore={policies.loadMore}
+            loadedCount={policies.count}
+            pageSize={DEFAULT_PAGE_SIZE}
+            unit="overrides"
+          />
+        </>
+      )}
+
+      {effectiveError ? (
+        <ErrorState
+          error={effectiveError.error}
+          onRetry={() => void effectiveError.refetch()}
+          scope="Resolved control set"
+          compact
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function OverridesEmpty({
+  noneDefined,
+  isAdmin,
+  onCreate,
+}: {
+  noneDefined: boolean;
+  isAdmin: boolean;
+  onCreate: () => void;
+}) {
+  return (
+    <EmptyState
+      title={noneDefined ? 'No overrides defined' : 'No overrides match this search'}
+      description={
+        noneDefined
+          ? 'The baseline applies unchanged. Create an override to deviate for specific controls.'
+          : 'Clear the search box to see every loaded override.'
+      }
+      action={
+        isAdmin && noneDefined ? (
+          <button type="button" className="button button-primary" onClick={onCreate}>
+            Create the first override
+          </button>
+        ) : null
+      }
+    />
+  );
+}
+
+function ResolvedSetPanel({ query }: { query: ReturnType<typeof useQuery<EffectiveResponse>> }) {
+  const controls = query.data?.controls ?? [];
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Resolved control set</h2>
+          <p>
+            {query.data
+              ? `${controls.length} controls resolved from baseline ${query.data.baseline_id} v${query.data.baseline_version} · total weight ${query.data.total_weight}.`
+              : 'Loading the resolved control set…'}
+          </p>
+        </div>
+      </div>
+
+      {query.data && controls.length === 0 ? (
+        <EmptyState
+          title="Nothing resolved"
+          description="The API returned an empty resolved control set."
+          compact
+        />
+      ) : null}
+
+      {controls.length > 0 ? (
+        <DataTable
+          columns={RESOLVED_COLUMNS}
+          rows={controls}
+          rowKey={(row) => row.control_id}
+          caption="Resolved control set"
+          empty={<EmptyState title="Nothing resolved" compact />}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+/* ---------- Mutations ---------- */
+
+/** Toggle and delete for existing overrides. Both report through toasts and refresh the caches. */
+function usePolicyMutations(isAdmin: boolean) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const queryClient = useQueryClient();
+
+  function invalidate() {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.policies.all });
+    if (isAdmin) void queryClient.invalidateQueries({ queryKey: queryKeys.policies.effective() });
+  }
 
   const toggle = useMutation({
     mutationFn: (policyId: string) => togglePolicy(policyId),
@@ -126,8 +443,7 @@ export default function PoliciesPage() {
           ? 'The override now participates in policy resolution.'
           : 'The override is skipped during resolution; the baseline value applies again.',
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.policies.all });
-      if (isAdmin) void queryClient.invalidateQueries({ queryKey: queryKeys.policies.effective() });
+      invalidate();
     },
     onError: (error) => {
       toast.push({
@@ -142,8 +458,7 @@ export default function PoliciesPage() {
     mutationFn: (policyId: string) => deletePolicy(policyId),
     onSuccess: () => {
       toast.push({ tone: 'success', title: 'Override deleted' });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.policies.all });
-      if (isAdmin) void queryClient.invalidateQueries({ queryKey: queryKeys.policies.effective() });
+      invalidate();
     },
     onError: (error) => {
       toast.push({
@@ -154,7 +469,7 @@ export default function PoliciesPage() {
     },
   });
 
-  async function onDelete(policy: Policy) {
+  async function requestDelete(policy: Policy) {
     const confirmed = await confirm({
       title: `Delete "${policy.name}"?`,
       message: (
@@ -169,17 +484,27 @@ export default function PoliciesPage() {
     if (confirmed) remove.mutate(policy.id);
   }
 
-  const rows = useMemo(() => {
-    const needle = debouncedSearch.trim().toLowerCase();
-    if (!needle) return policies.items;
-    return policies.items.filter((policy) =>
-      `${policy.name} ${policyTarget(policy)} ${policy.category ?? ''} ${policy.description ?? ''}`
-        .toLowerCase()
-        .includes(needle),
-    );
-  }, [policies.items, debouncedSearch]);
+  return { toggle, remove, requestDelete };
+}
 
-  const columns: Column<Policy>[] = [
+/* ---------- Override table columns ---------- */
+
+function buildOverrideColumns({
+  isAdmin,
+  effectiveByControl,
+  toggling,
+  removing,
+  onToggle,
+  onDelete,
+}: {
+  isAdmin: boolean;
+  effectiveByControl: Map<string, EffectiveControl>;
+  toggling: boolean;
+  removing: boolean;
+  onToggle: (policy: Policy) => void;
+  onDelete: (policy: Policy) => void;
+}): Column<Policy>[] {
+  return [
     {
       id: 'name',
       header: 'Override',
@@ -195,7 +520,7 @@ export default function PoliciesPage() {
       id: 'target',
       header: 'Target control',
       width: '14%',
-      cell: (row) => <code className="cell-code">{policyTarget(row)}</code>,
+      cell: (row) => <code className="cell-code">{row.control_id}</code>,
     },
     {
       id: 'category',
@@ -234,10 +559,12 @@ export default function PoliciesPage() {
       id: 'resolved',
       header: 'Baseline → resolved',
       width: '22%',
-      cell: (row) => {
-        if (!isAdmin) return <span className="muted">admin only</span>;
-        return <ResolvedComparison control={effectiveByControl.get(policyTarget(row))} />;
-      },
+      cell: (row) =>
+        isAdmin ? (
+          <ResolvedComparison control={effectiveByControl.get(row.control_id)} />
+        ) : (
+          <span className="muted">admin only</span>
+        ),
     },
     {
       id: 'state',
@@ -256,16 +583,16 @@ export default function PoliciesPage() {
             <button
               type="button"
               className="text-button"
-              onClick={() => toggle.mutate(row.id)}
-              disabled={toggle.isPending}
+              onClick={() => onToggle(row)}
+              disabled={toggling}
             >
               {row.is_enabled ? 'Disable' : 'Enable'}
             </button>
             <button
               type="button"
               className="text-button danger-text"
-              onClick={() => void onDelete(row)}
-              disabled={remove.isPending}
+              onClick={() => onDelete(row)}
+              disabled={removing}
             >
               Delete
             </button>
@@ -275,248 +602,93 @@ export default function PoliciesPage() {
         ),
     },
   ];
-
-  return (
-    <div className="page">
-      <div className="page-intro">
-        <div>
-          <span className="eyebrow">Policy management</span>
-          <h2>Policies</h2>
-          <p>
-            Overrides layer over the shipped baseline. Resolution order is baseline → override →
-            device, and the resolved value is shown next to each override.
-          </p>
-        </div>
-        <div className="inline-actions">
-          <button type="button" className="button button-light" onClick={policies.reload}>
-            Refresh
-          </button>
-          {isAdmin ? (
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={() => setShowCreate(true)}
-            >
-              New override
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      {!isAdmin ? (
-        <Notice tone="info" title="Read-only view">
-          Creating, enabling, disabling and deleting overrides are administrator actions, and
-          `GET /policies/effective` is admin-only — so resolved baseline values are not shown. The API
-          will also refuse these writes with a 403.
-        </Notice>
-      ) : null}
-
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>Overrides</h2>
-            <p>
-              {policies.count} loaded{includeDisabled ? '' : ' · disabled overrides hidden'}
-            </p>
-          </div>
-          <div className="table-tools">
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={includeDisabled}
-                onChange={(event) => setIncludeDisabled(event.target.checked)}
-              />
-              <span>Include disabled</span>
-            </label>
-            <label className="field field-inline">
-              <span className="visually-hidden">Search overrides</span>
-              <input
-                type="search"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search overrides"
-              />
-            </label>
-          </div>
-        </div>
-
-        {policies.isError ? (
-          <ErrorState error={policies.error} onRetry={policies.reload} scope="Policy overrides" />
-        ) : (
-          <>
-            <DataTable
-              columns={columns}
-              rows={rows}
-              rowKey={(row) => row.id}
-              caption="Policy overrides layered over the baseline"
-              busy={policies.isLoading}
-              busyLabel="Loading overrides…"
-              empty={
-                <EmptyState
-                  title={
-                    policies.items.length === 0
-                      ? 'No overrides defined'
-                      : 'No overrides match this search'
-                  }
-                  description={
-                    policies.items.length === 0
-                      ? 'The baseline applies unchanged. Create an override to deviate for specific controls.'
-                      : 'Clear the search box to see every loaded override.'
-                  }
-                  action={
-                    isAdmin && policies.items.length === 0 ? (
-                      <button
-                        type="button"
-                        className="button button-primary"
-                        onClick={() => setShowCreate(true)}
-                      >
-                        Create the first override
-                      </button>
-                    ) : null
-                  }
-                />
-              }
-            />
-            <LoadMore
-              hasMore={policies.hasMore}
-              isLoading={policies.isLoadingMore}
-              onLoadMore={policies.loadMore}
-              loadedCount={policies.count}
-              pageSize={DEFAULT_PAGE_SIZE}
-              unit="overrides"
-            />
-          </>
-        )}
-
-        {isAdmin && effective.isError ? (
-          <ErrorState
-            error={effective.error}
-            onRetry={() => void effective.refetch()}
-            scope="Resolved control set"
-            compact
-          />
-        ) : null}
-      </section>
-
-      {isAdmin ? (
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>Resolved control set</h2>
-              <p>
-                {effective.data
-                  ? `${effective.data.controls.length} controls resolved from baseline ${effective.data.baseline_id} v${effective.data.baseline_version} · total weight ${effective.data.total_weight}.`
-                  : 'Loading the resolved control set…'}
-              </p>
-            </div>
-          </div>
-          {effective.data && effective.data.controls.length === 0 ? (
-            <EmptyState
-              title="Nothing resolved"
-              description="The API returned an empty resolved control set."
-              compact
-            />
-          ) : null}
-          {effective.data && effective.data.controls.length > 0 ? (
-            <DataTable
-              columns={[
-                {
-                  id: 'control',
-                  header: 'Control',
-                  width: '15%',
-                  cell: (row) => <code className="cell-code">{row.control_id}</code>,
-                },
-                {
-                  id: 'title',
-                  header: 'Title',
-                  cell: (row) => row.title,
-                },
-                {
-                  id: 'layer',
-                  header: 'Resolved by',
-                  width: '13%',
-                  cell: (row) => <PolicyLayerBadge layer={dominantLayer(row.sources)} />,
-                },
-                {
-                  id: 'weight',
-                  header: 'Weight (baseline → resolved)',
-                  width: '19%',
-                  cell: (row) => (
-                    <span className="resolved-row">
-                      <span className="resolved-baseline">{row.baseline_weight}</span>
-                      <span aria-hidden="true">→</span>
-                      <strong>{row.weight}</strong>
-                      {row.weight !== row.baseline_weight ? (
-                        <PolicyLayerBadge layer={row.sources?.weight ?? null} />
-                      ) : null}
-                    </span>
-                  ),
-                },
-                {
-                  id: 'severity',
-                  header: 'Severity (baseline → resolved)',
-                  width: '17%',
-                  cell: (row) => (
-                    <span className="resolved-row">
-                      <span className="resolved-baseline">{humanize(row.baseline_severity)}</span>
-                      <span aria-hidden="true">→</span>
-                      <SeverityBadge severity={row.severity} />
-                    </span>
-                  ),
-                },
-                {
-                  id: 'enabled',
-                  header: 'Override',
-                  width: '10%',
-                  cell: (row) => <EnabledBadge enabled={row.enabled} />,
-                },
-                {
-                  id: 'exempt',
-                  header: 'Exempt',
-                  width: '10%',
-                  cell: (row) =>
-                    row.exempted ? (
-                      <NeutralBadge label="Exempt" title={row.exemption_reason ?? 'An exemption applies on this device.'} />
-                    ) : (
-                      <span className="muted">—</span>
-                    ),
-                },
-                {
-                  id: 'category',
-                  header: 'Category',
-                  hideBelow: 'lg',
-                  cell: (row) => row.category,
-                },
-              ]}
-              rows={effective.data.controls}
-              rowKey={(row) => row.control_id}
-              caption="Resolved control set"
-              empty={<EmptyState title="Nothing resolved" compact />}
-            />
-          ) : null}
-        </section>
-      ) : null}
-
-      <CreatePolicyDrawer open={showCreate} onClose={() => setShowCreate(false)} />
-    </div>
-  );
 }
+
+/* ---------- Resolved set columns (no dependencies, built once) ---------- */
+
+const RESOLVED_COLUMNS: Column<ResolvedControl>[] = [
+  {
+    id: 'control',
+    header: 'Control',
+    width: '15%',
+    cell: (row) => <code className="cell-code">{row.control_id}</code>,
+  },
+  {
+    id: 'title',
+    header: 'Title',
+    cell: (row) => row.title,
+  },
+  {
+    id: 'layer',
+    header: 'Resolved by',
+    width: '13%',
+    cell: (row) => <PolicyLayerBadge layer={dominantLayer(row.sources)} />,
+  },
+  {
+    id: 'weight',
+    header: 'Weight (baseline → resolved)',
+    width: '19%',
+    cell: (row) => (
+      <span className="resolved-row">
+        <BaselineArrow baseline={row.baseline_weight}>
+          <strong>{row.weight}</strong>
+        </BaselineArrow>
+        {row.weight !== row.baseline_weight ? (
+          <PolicyLayerBadge layer={row.sources?.weight ?? null} />
+        ) : null}
+      </span>
+    ),
+  },
+  {
+    id: 'severity',
+    header: 'Severity (baseline → resolved)',
+    width: '17%',
+    cell: (row) => (
+      <span className="resolved-row">
+        <BaselineArrow baseline={humanize(row.baseline_severity)}>
+          <SeverityBadge severity={row.severity} />
+        </BaselineArrow>
+      </span>
+    ),
+  },
+  {
+    id: 'enabled',
+    header: 'Override',
+    width: '10%',
+    cell: (row) => <EnabledBadge enabled={row.enabled} />,
+  },
+  {
+    id: 'exempt',
+    header: 'Exempt',
+    width: '10%',
+    cell: (row) =>
+      row.exempted ? (
+        <NeutralBadge
+          label="Exempt"
+          title={row.exemption_reason ?? 'An exemption applies on this device.'}
+        />
+      ) : (
+        <span className="muted">—</span>
+      ),
+  },
+  {
+    id: 'category',
+    header: 'Category',
+    hideBelow: 'lg',
+    cell: (row) => row.category,
+  },
+];
+
+/* ---------- Create drawer ---------- */
 
 function CreatePolicyDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({
-    name: '',
-    controlId: '',
-    category: '',
-    severity: 'medium',
-    weight: '1',
-    description: '',
-    expectedValue: '{\n  "operator": "==",\n  "value": true\n}',
-    recommendation: '',
-    isEnabled: true,
-  });
+  const [form, setForm] = useState<OverrideForm>(EMPTY_FORM);
   const [jsonError, setJsonError] = useState<string | null>(null);
+
+  const set = <K extends keyof OverrideForm>(key: K) => (value: OverrideForm[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
 
   const create = useMutation({
     mutationFn: () => {
@@ -556,9 +728,8 @@ function CreatePolicyDrawer({ open, onClose }: { open: boolean; onClose: () => v
     },
   });
 
-  function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
-    setForm((current) => ({ ...current, [key]: value }));
-  }
+  const canSubmit =
+    !create.isPending && form.name.trim() !== '' && form.controlId.trim() !== '';
 
   return (
     <Drawer
@@ -576,7 +747,7 @@ function CreatePolicyDrawer({ open, onClose }: { open: boolean; onClose: () => v
             type="button"
             className="button button-primary"
             onClick={() => create.mutate()}
-            disabled={create.isPending || form.name.trim() === '' || form.controlId.trim() === ''}
+            disabled={!canSubmit}
           >
             {create.isPending ? 'Creating…' : 'Create override'}
           </button>
@@ -584,39 +755,25 @@ function CreatePolicyDrawer({ open, onClose }: { open: boolean; onClose: () => v
       }
     >
       <div className="form-grid">
-        <label className="field">
-          <span className="field-label">Name</span>
-          <input
-            type="text"
-            value={form.name}
-            onChange={(event) => update('name', event.target.value)}
-            placeholder="Stricter SMB signing requirement"
-            required
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">Control ID</span>
-          <input
-            type="text"
-            value={form.controlId}
-            onChange={(event) => update('controlId', event.target.value)}
-            placeholder="WIN-SMB-002"
-            required
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">Category</span>
-          <input
-            type="text"
-            value={form.category}
-            onChange={(event) => update('category', event.target.value)}
-            placeholder="Network"
-          />
-        </label>
+        <TextField
+          label="Name"
+          value={form.name}
+          onChange={set('name')}
+          placeholder="Stricter SMB signing requirement"
+          required
+        />
+        <TextField
+          label="Control ID"
+          value={form.controlId}
+          onChange={set('controlId')}
+          placeholder="WIN-SMB-002"
+          required
+        />
+        <TextField label="Category" value={form.category} onChange={set('category')} placeholder="Network" />
         <label className="field">
           <span className="field-label">Severity</span>
-          <select value={form.severity} onChange={(event) => update('severity', event.target.value)}>
-            {['critical', 'high', 'medium', 'low', 'informational'].map((value) => (
+          <select value={form.severity} onChange={(event) => set('severity')(event.target.value)}>
+            {SEVERITY_CHOICES.map((value) => (
               <option key={value} value={value}>
                 {humanize(value)}
               </option>
@@ -630,7 +787,7 @@ function CreatePolicyDrawer({ open, onClose }: { open: boolean; onClose: () => v
             min="0"
             step="0.1"
             value={form.weight}
-            onChange={(event) => update('weight', event.target.value)}
+            onChange={(event) => set('weight')(event.target.value)}
           />
           <span className="field-hint">Relative weight used by the scoring model.</span>
         </label>
@@ -638,27 +795,25 @@ function CreatePolicyDrawer({ open, onClose }: { open: boolean; onClose: () => v
           <span className="field-label">Enabled</span>
           <select
             value={form.isEnabled ? 'yes' : 'no'}
-            onChange={(event) => update('isEnabled', event.target.value === 'yes')}
+            onChange={(event) => set('isEnabled')(event.target.value === 'yes')}
           >
             <option value="yes">Enabled</option>
             <option value="no">Disabled</option>
           </select>
         </label>
-        <label className="field span-2">
-          <span className="field-label">Description</span>
-          <input
-            type="text"
-            value={form.description}
-            onChange={(event) => update('description', event.target.value)}
-            placeholder="Why does this override exist?"
-          />
-        </label>
+        <TextField
+          label="Description"
+          value={form.description}
+          onChange={set('description')}
+          placeholder="Why does this override exist?"
+          spanTwo
+        />
         <label className="field span-2">
           <span className="field-label">Expected value (JSON)</span>
           <textarea
             value={form.expectedValue}
             onChange={(event) => {
-              update('expectedValue', event.target.value);
+              set('expectedValue')(event.target.value);
               setJsonError(null);
             }}
             rows={6}
@@ -673,12 +828,41 @@ function CreatePolicyDrawer({ open, onClose }: { open: boolean; onClose: () => v
           <span className="field-label">Recommendation template</span>
           <textarea
             value={form.recommendation}
-            onChange={(event) => update('recommendation', event.target.value)}
+            onChange={(event) => set('recommendation')(event.target.value)}
             rows={3}
             placeholder="Guidance shown with findings for this control."
           />
         </label>
       </div>
     </Drawer>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  required,
+  spanTwo,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  required?: boolean;
+  spanTwo?: boolean;
+}) {
+  return (
+    <label className={spanTwo ? 'field span-2' : 'field'}>
+      <span className="field-label">{label}</span>
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        required={required}
+      />
+    </label>
   );
 }
